@@ -17,20 +17,18 @@ internal class SshConnectionParameters
 
     internal static SshConnectionParameters FromKeyExchangeInitPacket(KeyExchangeInitPacket serverKexPacket, KeyExchangeInitPacket clientKexPacket)
     {
-        // TODO: proper negotiation
-
         return new SshConnectionParameters()
         {
-            KeyExchangeAlgorithm = clientKexPacket.KeyExchangeAlgorithms[0],
-            ServerHostKeyAlgorithm = clientKexPacket.ServerHostKeyAlgorithms[0],
-            EncryptionAlgorithmClientToServer = clientKexPacket.EncryptionAlgorithmsClientToServer[0],
-            EncryptionAlgorithmServerToClient = clientKexPacket.EncryptionAlgorithmsServerToClient[0],
-            MacAlgorithmClientToServer = clientKexPacket.MacAlgorithmsClientToServer[0],
-            MacAlgorithmServerToClient = clientKexPacket.MacAlgorithmsServerToClient[0],
-            CompressionAlgorithmClientToServer = clientKexPacket.CompressionAlgorithmsClientToServer[0],
-            CompressionAlgorithmServerToClient = clientKexPacket.CompressionAlgorithmsServerToClient[0],
-            LanguageClientToServer = clientKexPacket.LanguagesClientToServer.FirstOrDefault(),
-            LanguageServerToClient = clientKexPacket.LanguagesServerToClient.FirstOrDefault(),
+            KeyExchangeAlgorithm = clientKexPacket.KeyExchangeAlgorithms.FirstOrDefault(a => serverKexPacket.KeyExchangeAlgorithms.Contains(a)) ?? throw new Exception("No common key exchange algorithm"),
+            ServerHostKeyAlgorithm = clientKexPacket.ServerHostKeyAlgorithms.FirstOrDefault(a => serverKexPacket.ServerHostKeyAlgorithms.Contains(a)) ?? throw new Exception("No common host key algorithm"),
+            EncryptionAlgorithmClientToServer = clientKexPacket.EncryptionAlgorithmsClientToServer.FirstOrDefault(a => serverKexPacket.EncryptionAlgorithmsClientToServer.Contains(a)) ?? throw new Exception("No common encryption algorithm (client to server)"),
+            EncryptionAlgorithmServerToClient = clientKexPacket.EncryptionAlgorithmsServerToClient.FirstOrDefault(a => serverKexPacket.EncryptionAlgorithmsServerToClient.Contains(a)) ?? throw new Exception("No common encryption algorithm (server to client)"),
+            MacAlgorithmClientToServer = clientKexPacket.MacAlgorithmsClientToServer.FirstOrDefault(a => serverKexPacket.MacAlgorithmsClientToServer.Contains(a)) ?? throw new Exception("No common MAC algorithm (client to server)"),
+            MacAlgorithmServerToClient = clientKexPacket.MacAlgorithmsServerToClient.FirstOrDefault(a => serverKexPacket.MacAlgorithmsServerToClient.Contains(a)) ?? throw new Exception("No common MAC algorithm (server to client)"),
+            CompressionAlgorithmClientToServer = clientKexPacket.CompressionAlgorithmsClientToServer.FirstOrDefault(a => serverKexPacket.CompressionAlgorithmsClientToServer.Contains(a)) ?? throw new Exception("No common compression algorithm (client to server)"),
+            CompressionAlgorithmServerToClient = clientKexPacket.CompressionAlgorithmsServerToClient.FirstOrDefault(a => serverKexPacket.CompressionAlgorithmsServerToClient.Contains(a)) ?? throw new Exception("No common compression algorithm (server to client)"),
+            LanguageClientToServer = clientKexPacket.LanguagesClientToServer.FirstOrDefault(l => serverKexPacket.LanguagesClientToServer.Contains(l)),
+            LanguageServerToClient = clientKexPacket.LanguagesServerToClient.FirstOrDefault(l => serverKexPacket.LanguagesServerToClient.Contains(l)),
         };
     }
 }

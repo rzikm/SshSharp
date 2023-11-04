@@ -3,7 +3,6 @@ using Ssh.Net.Crypto;
 using Ssh.Net.Packets;
 using Ssh.Net.Transport;
 using Ssh.Net.Utils;
-using Renci.SshNet;
 
 using System;
 using System.Diagnostics;
@@ -16,4 +15,3 @@ using System.Security.Cryptography;
 var endpoint = new DnsEndPoint("localhost", 22);
 
 var connection = SshConnection.Connect(endpoint);
-return;

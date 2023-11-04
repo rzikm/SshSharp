@@ -21,9 +21,7 @@ internal class SshConnection : IDisposable
 
     private SshConnectionParameters _parameters = null!;
 
-    private KeyExchangeCurve25519Sha256 _keyExchange = new KeyExchangeCurve25519Sha256();
-
-    private byte[] SecretKey { get; set; } = null!;
+    private KeyExchange _keyExchange = null!;
 
     public SshConnection(Socket socket)
     {
@@ -61,20 +59,13 @@ internal class SshConnection : IDisposable
 
         var clientKexPacket = new KeyExchangeInitPacket()
         {
-            Cookie = serverKexPacket.Cookie,
-            // KeyExchangeAlgorithms = new List<string> { "ecdh-sha2-nistp256" },
+            Cookie = (UInt128)Random.Shared.NextInt64() + ((UInt128)Random.Shared.NextInt64()) << 64,
             KeyExchangeAlgorithms = new List<string> { "curve25519-sha256" },
             ServerHostKeyAlgorithms = new List<string> { "rsa-sha2-512" },
-            // ServerHostKeyAlgorithms = serverKexPacket.ServerHostKeyAlgorithms,
             EncryptionAlgorithmsClientToServer = new List<string> { "aes256-ctr" },
-            // EncryptionAlgorithmsClientToServer = serverKexPacket.EncryptionAlgorithmsClientToServer,
             EncryptionAlgorithmsServerToClient = new List<string> { "aes256-ctr" },
-            // EncryptionAlgorithmsServerToClient = serverKexPacket.EncryptionAlgorithmsServerToClient,
             MacAlgorithmsClientToServer = new List<string> { "hmac-sha1" },
-            // MacAlgorithmsClientToServer = serverKexPacket.MacAlgorithmsClientToServer,
             MacAlgorithmsServerToClient = new List<string> { "hmac-sha1" },
-            // MacAlgorithmsServerToClient = serverKexPacket.MacAlgorithmsServerToClient,
-
             CompressionAlgorithmsClientToServer = new List<string> { "none" },
             CompressionAlgorithmsServerToClient = new List<string> { "none" },
             LanguagesClientToServer = new List<string> { },
@@ -84,25 +75,26 @@ internal class SshConnection : IDisposable
         };
 
         _parameters = SshConnectionParameters.FromKeyExchangeInitPacket(serverKexPacket, clientKexPacket);
+        _keyExchange = KeyExchange.Create(_parameters.KeyExchangeAlgorithm);
 
         _readerWriter.SendPacket(clientKexPacket);
 
         // send initial key exchange packet
         _readerWriter.SendPacket(new KeyExchangeEcdhInitPacket
         {
-            ClientEphemeralPublicKey = _keyExchange.PublicKey,
+            ClientEphemeralPublicKey = _keyExchange.EphemeralPublicKey,
         });
 
         var serverKexReply = ExpectMessage<KeyExchangeEcdhReplyPacket>();
         DebugHelpers.DumpKeyExchangeReplyPacket(serverKexReply);
 
-        SecretKey = _keyExchange.DeriveSharedSecret(serverKexReply.ServerEphemeralPublicKey);
-
-        _keyExchange.VerifyExchangeSignature(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply);
+        if (!_keyExchange.VerifyExchangeSignature(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply))
+        {
+            throw new Exception("Failed to verify exchange signature.");
+        }
 
         ExpectMessage(MessageId.SSH_MSG_NEWKEYS);
 
-        System.Console.WriteLine($"Secret key: {BitConverter.ToString(SecretKey)}");
         _readerWriter.SendPacket(MessageId.SSH_MSG_NEWKEYS);
     }
 
