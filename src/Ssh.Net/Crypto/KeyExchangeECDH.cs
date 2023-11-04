@@ -1,11 +1,10 @@
-using System.Linq;
 using System.Security.Cryptography;
 using Ssh.Net.Packets;
 using Ssh.Net.Utils;
 
 namespace Ssh.Net.Crypto;
 
-internal class KeyExchangeCurve25519Sha256 : IDisposable
+internal class KeyExchangeECDH : IDisposable
 {
     private readonly ECDiffieHellman _ecdh;
 
@@ -13,37 +12,23 @@ internal class KeyExchangeCurve25519Sha256 : IDisposable
 
     public byte[] SharedSecret { get; private set; } = null!;
 
-    public KeyExchangeCurve25519Sha256()
+    public KeyExchangeECDH()
     {
         _ecdh = ECDiffieHellman.Create();
-        _ecdh.GenerateKey(ECCurves.Curve25519);
+        _ecdh.GenerateKey(ECCurve.NamedCurves.nistP256);
 
         var parameters = _ecdh.PublicKey.ExportParameters();
-        PublicKey = parameters.Q.X!;
-    }
-
-    public KeyExchangeCurve25519Sha256(byte[] privateKey)
-    {
-        var parameters = new ECParameters
-        {
-            Curve = ECCurves.Curve25519,
-            D = privateKey
-        };
-
-        _ecdh = ECDiffieHellman.Create(parameters);
-        parameters = _ecdh.PublicKey.ExportParameters();
-
-        PublicKey = parameters.Q.X!;
+        PublicKey = new byte[] { 0x04 }.Concat(parameters.Q.X!).Concat(parameters.Q.Y!).ToArray();
     }
 
     public byte[] DeriveSharedSecret(byte[] otherPublicKey)
     {
         var otherParams = new ECParameters
         {
-            Curve = ECCurves.Curve25519,
+            Curve = ECCurve.NamedCurves.nistP256,
             Q = {
-                X = otherPublicKey,
-                Y = new byte[32]
+                X = otherPublicKey[1..33],
+                Y = otherPublicKey[33..]
             }
         };
 
@@ -74,6 +59,9 @@ internal class KeyExchangeCurve25519Sha256 : IDisposable
             Modulus = n.ToArray()
         };
 
+        // rsaParameters.Exponent.Reverse();
+        // rsaParameters.Modulus.Reverse();
+
         rsa.ImportParameters(rsaParameters);
 
         Span<byte> buffer = stackalloc byte[4 * 1024];
@@ -87,6 +75,7 @@ internal class KeyExchangeCurve25519Sha256 : IDisposable
         writer.WriteString(kexReply.HostKey);
         writer.WriteString(PublicKey);
         writer.WriteString(kexReply.ServerEphemeralPublicKey);
+        SharedSecret.Reverse();
         writer.WriteBigInt(SharedSecret);
         buffer = buffer.Slice(0, buffer.Length - writer.RemainingBytes);
 
@@ -115,10 +104,5 @@ internal class KeyExchangeCurve25519Sha256 : IDisposable
     public void Dispose()
     {
         _ecdh.Dispose();
-    }
-
-    byte[] DecodeString(string s)
-    {
-        return s.Split('-').Select(x => Convert.ToByte(x, 16)).ToArray();
     }
 }

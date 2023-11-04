@@ -75,6 +75,17 @@ internal class PacketReaderWriter : IDisposable
         _stream.Write(_sendBuffer.AsSpan(0, written));
     }
 
+    public void SendPacket(MessageId messageId, string param)
+    {
+        Span<byte> buffer = stackalloc byte[DataHelper.GetStringWireLength(param) + 1];
+        SpanWriter writer = new(buffer);
+        writer.WriteByte((byte)messageId);
+        writer.WriteString(param);
+
+        int written = PacketHelpers.WritePayload(_sendBuffer, buffer);
+        _stream.Write(_sendBuffer.AsSpan(0, written));
+    }
+
     public void SendPacket(MessageId messageId)
     {
         Span<byte> buffer = [(byte)messageId];

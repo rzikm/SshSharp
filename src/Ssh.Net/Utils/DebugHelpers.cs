@@ -20,4 +20,13 @@ internal static class DebugHelpers
         Console.WriteLine($"Reserved: {packet.Reserved}");
         System.Console.WriteLine();
     }
+
+    internal static void DumpKeyExchangeReplyPacket(in KeyExchangeEcdhReplyPacket packet)
+    {
+        Console.WriteLine(KeyExchangeEcdhReplyPacket.MessageId);
+        Console.WriteLine($"HostKey: {BitConverter.ToString(packet.HostKey)}");
+        Console.WriteLine($"ServerEphemeralPublicKey: {BitConverter.ToString(packet.ServerEphemeralPublicKey)}");
+        Console.WriteLine($"ExchangeHashSignature: {BitConverter.ToString(packet.ExchangeHashSignature)}");
+        System.Console.WriteLine();
+    }
 }

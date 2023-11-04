@@ -21,7 +21,7 @@ internal class SshConnection : IDisposable
 
     private SshConnectionParameters _parameters = null!;
 
-    private KeyExchangeCurve25519 _keyExchange = new KeyExchangeCurve25519();
+    private KeyExchangeCurve25519Sha256 _keyExchange = new KeyExchangeCurve25519Sha256();
 
     private byte[] SecretKey { get; set; } = null!;
 
@@ -48,7 +48,7 @@ internal class SshConnection : IDisposable
         ServerVersion = ReadVersionString();
         System.Console.WriteLine($"Server version: {ServerVersion}");
 
-        _stream.Write("SSH-2.0-SSH_NET_0.0.0\r\n"u8);
+        _stream.Write(Constants.VersionBytesCrLf);
 
         // read key exchange packet
         DoKeyExchange();
@@ -64,16 +64,16 @@ internal class SshConnection : IDisposable
             Cookie = serverKexPacket.Cookie,
             // KeyExchangeAlgorithms = new List<string> { "ecdh-sha2-nistp256" },
             KeyExchangeAlgorithms = new List<string> { "curve25519-sha256" },
-            // ServerHostKeyAlgorithms = new List<string> { "rsa-sha2-512" },
-            ServerHostKeyAlgorithms = serverKexPacket.ServerHostKeyAlgorithms,
+            ServerHostKeyAlgorithms = new List<string> { "rsa-sha2-512" },
+            // ServerHostKeyAlgorithms = serverKexPacket.ServerHostKeyAlgorithms,
             EncryptionAlgorithmsClientToServer = new List<string> { "aes256-ctr" },
             // EncryptionAlgorithmsClientToServer = serverKexPacket.EncryptionAlgorithmsClientToServer,
             EncryptionAlgorithmsServerToClient = new List<string> { "aes256-ctr" },
             // EncryptionAlgorithmsServerToClient = serverKexPacket.EncryptionAlgorithmsServerToClient,
-            // MacAlgorithmsClientToServer = new List<string> { "hmac-sha2-512" },
-            MacAlgorithmsClientToServer = serverKexPacket.MacAlgorithmsClientToServer,
-            // MacAlgorithmsServerToClient = new List<string> { "hmac-sha2-512" },
-            MacAlgorithmsServerToClient = serverKexPacket.MacAlgorithmsServerToClient,
+            MacAlgorithmsClientToServer = new List<string> { "hmac-sha1" },
+            // MacAlgorithmsClientToServer = serverKexPacket.MacAlgorithmsClientToServer,
+            MacAlgorithmsServerToClient = new List<string> { "hmac-sha1" },
+            // MacAlgorithmsServerToClient = serverKexPacket.MacAlgorithmsServerToClient,
 
             CompressionAlgorithmsClientToServer = new List<string> { "none" },
             CompressionAlgorithmsServerToClient = new List<string> { "none" },
@@ -94,9 +94,15 @@ internal class SshConnection : IDisposable
         });
 
         var serverKexReply = ExpectMessage<KeyExchangeEcdhReplyPacket>();
-        ExpectMessage(MessageId.SSH_MSG_NEWKEYS);
+        DebugHelpers.DumpKeyExchangeReplyPacket(serverKexReply);
 
         SecretKey = _keyExchange.DeriveSharedSecret(serverKexReply.ServerEphemeralPublicKey);
+
+        _keyExchange.VerifyExchangeSignature(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply);
+
+        ExpectMessage(MessageId.SSH_MSG_NEWKEYS);
+
+        System.Console.WriteLine($"Secret key: {BitConverter.ToString(SecretKey)}");
         _readerWriter.SendPacket(MessageId.SSH_MSG_NEWKEYS);
     }
 
@@ -105,6 +111,14 @@ internal class SshConnection : IDisposable
         var packet = _readerWriter.ReadPacket();
         if ((MessageId)packet.Payload[0] != T.MessageId)
         {
+            if ((MessageId)packet.Payload[0] == MessageId.SSH_MSG_DISCONNECT)
+            {
+                if (DisconnectPacket.TryRead(packet.Payload, out var disconnectPacket, out _))
+                {
+                    throw new Exception($"Disconnected: [{disconnectPacket.ReasonCode}] {disconnectPacket.Description}");
+                }
+            }
+
             throw new Exception($"Expected {T.MessageId}, got {(MessageId)packet.Payload[0]}.");
         }
 
@@ -121,6 +135,14 @@ internal class SshConnection : IDisposable
         var packet = _readerWriter.ReadPacket();
         if ((MessageId)packet.Payload[0] != messageId)
         {
+            if ((MessageId)packet.Payload[0] == MessageId.SSH_MSG_DISCONNECT)
+            {
+                if (DisconnectPacket.TryRead(packet.Payload, out var disconnectPacket, out _))
+                {
+                    throw new Exception($"Disconnected: [{disconnectPacket.ReasonCode}] {disconnectPacket.Description}");
+                }
+            }
+
             throw new Exception($"Expected {messageId}, got {(MessageId)packet.Payload[0]}.");
         }
     }

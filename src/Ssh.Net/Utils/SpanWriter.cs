@@ -41,6 +41,25 @@ internal ref struct SpanWriter
         _buffer = _buffer.Slice(4 + length);
     }
 
+    public void WriteBigInt(ReadOnlySpan<byte> value)
+    {
+        var length = value.Length;
+        var startOffset = 4;
+
+        if (length > 0 && value[0] > 127)
+        {
+            // prepend zero to make sure it represents positive number
+            length++;
+            _buffer[4] = 0;
+            startOffset++;
+        }
+
+        BinaryPrimitives.WriteUInt32BigEndian(_buffer, (uint)length);
+        value.CopyTo(_buffer.Slice(startOffset));
+
+        _buffer = _buffer.Slice(4 + length);
+    }
+
     public void WriteStringList(List<string>? value)
     {
         if (value == null)
@@ -84,6 +103,13 @@ internal ref struct SpanWriter
     {
         DataHelper.TryWritePrimitive(_buffer, value, out var written);
         _buffer = _buffer.Slice(written);
+    }
+
+    public void WritePayloadAsString<T>(in T packet) where T : IPacketPayload<T>
+    {
+        int written = T.Write(_buffer.Slice(4), packet);
+        BinaryPrimitives.WriteUInt32BigEndian(_buffer, (uint)written);
+        _buffer = _buffer.Slice(4 + written);
     }
 
     public void WriteUInt32(uint value) => WritePrimitive(value);
