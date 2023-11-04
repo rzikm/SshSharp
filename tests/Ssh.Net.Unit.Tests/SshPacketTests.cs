@@ -1,3 +1,5 @@
+using Ssh.Net.Packets;
+
 namespace Ssh.Net.Unit.Tests;
 
 public class SshPacketTests
@@ -11,7 +13,7 @@ public class SshPacketTests
         var result = SshPacket.TryRead(buffer, macLength, out _, out var consumed);
 
         Assert.False(result);
-        Assert.Equal(0, consumed);
+        Assert.Equal(5, consumed);
     }
 
     [Fact]
@@ -50,7 +52,7 @@ public class SshPacketTests
             var packet = new SshPacket();
             var destination = new byte[packet.WireLength - 1];
 
-            SshPacket.Write(packet, destination);
+            SshPacket.Write(destination, packet);
         });
     }
 
@@ -66,7 +68,7 @@ public class SshPacketTests
 
         var destination = new byte[packet.WireLength];
 
-        SshPacket.Write(packet, destination);
+        SshPacket.Write(destination, packet);
 
         var result = SshPacket.TryRead(destination, packet.Mac.Length, out var readPacket, out var consumed);
 

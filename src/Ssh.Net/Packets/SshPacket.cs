@@ -1,7 +1,6 @@
 using System.Buffers.Binary;
-using System.Diagnostics;
 
-namespace Ssh.Net;
+namespace Ssh.Net.Packets;
 
 internal ref struct SshPacket
 {
@@ -16,7 +15,7 @@ internal ref struct SshPacket
     public static bool TryRead(ReadOnlySpan<byte> buffer, int macLength, out SshPacket packet, out int consumed)
     {
         packet = default;
-        consumed = 0;
+        consumed = 5;
 
         if (buffer.Length < 5)
         {
@@ -51,7 +50,7 @@ internal ref struct SshPacket
         return true;
     }
 
-    public static void Write(in SshPacket packet, Span<byte> destination)
+    public static void Write(Span<byte> destination, in SshPacket packet)
     {
         if (destination.Length < packet.WireLength)
         {

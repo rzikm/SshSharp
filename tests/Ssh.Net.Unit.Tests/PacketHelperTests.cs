@@ -1,3 +1,4 @@
+using Ssh.Net.Packets;
 using Ssh.Net.Utils;
 
 namespace Ssh.Net.Unit.Tests;
@@ -27,7 +28,7 @@ public class PacketHelperTests
 
         int written = PacketHelpers.WritePayload(buffer, payload);
 
-        Assert.Equal(0, (written - 4) % 8);
+        Assert.Equal(0, written % 8);
 
         Assert.True(SshPacket.TryRead(buffer, 0, out var packet, out var read));
         Assert.Equal(written, read);

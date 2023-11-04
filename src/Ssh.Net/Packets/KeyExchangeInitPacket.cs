@@ -1,6 +1,6 @@
 using Ssh.Net.Utils;
 
-namespace Ssh.Net;
+namespace Ssh.Net.Packets;
 
 internal struct KeyExchangeInitPacket : IPacketPayload<KeyExchangeInitPacket>
 {
@@ -19,6 +19,8 @@ internal struct KeyExchangeInitPacket : IPacketPayload<KeyExchangeInitPacket>
     public uint Reserved { get; set; }
 
     public int WireLength => GetWireLength();
+
+    public static MessageId MessageId => MessageId.SSH_MSG_KEXINIT;
 
     private int GetWireLength()
     {

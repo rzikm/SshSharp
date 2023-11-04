@@ -31,6 +31,16 @@ internal ref struct SpanWriter
         _buffer = _buffer.Slice(4 + length);
     }
 
+    public void WriteString(ReadOnlySpan<byte> value)
+    {
+        var length = value.Length;
+
+        BinaryPrimitives.WriteUInt32BigEndian(_buffer, (uint)length);
+        value.CopyTo(_buffer.Slice(4));
+
+        _buffer = _buffer.Slice(4 + length);
+    }
+
     public void WriteStringList(List<string>? value)
     {
         if (value == null)

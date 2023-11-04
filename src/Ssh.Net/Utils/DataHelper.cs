@@ -13,6 +13,11 @@ internal static class DataHelper
         return 4 + Encoding.UTF8.GetByteCount(value);
     }
 
+    internal static int GetStringWireLength(ReadOnlySpan<byte> value)
+    {
+        return 4 + value.Length;
+    }
+
     internal static int GetStringListWireLength(List<string> values)
     {
         var length = 4;
@@ -80,6 +85,12 @@ internal static class DataHelper
             {
                 value.Add(Encoding.UTF8.GetString(span.Slice(0, index)));
                 span = span.Slice(index + 1);
+            }
+
+            // add leftover
+            if (span.Length > 0)
+            {
+                value.Add(Encoding.UTF8.GetString(span));
             }
 
             return true;
