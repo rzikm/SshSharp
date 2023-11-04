@@ -20,10 +20,8 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-  </ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\..\src\Ssh.Net\Ssh.Net.csproj" />
+    <Compile Include="..\..\src\Ssh.Net\**\*.cs" Exclude="..\..\src\Ssh.Net\obj\**\*.cs"/>
   </ItemGroup>
 
 </Project>
