@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Security.Cryptography;
 using Ssh.Net.Packets;
 using Ssh.Net.Utils;
@@ -10,9 +11,15 @@ internal abstract class KeyExchange
 
     public abstract byte[] EphemeralPublicKey { get; }
 
-    public abstract byte[]? SharedSecret { get; }
+    public byte[]? SharedSecret { get; private set; }
 
-    public abstract void DeriveSharedSecret(byte[] otherPublicKey);
+    protected abstract byte[] DeriveSharedSecretCore(byte[] otherPublicKey);
+
+    [MemberNotNull(nameof(SharedSecret))]
+    public void DeriveSharedSecret(byte[] otherPublicKey)
+    {
+        SharedSecret = DeriveSharedSecretCore(otherPublicKey);
+    }
 
     public KeyExchange(string name)
     {
@@ -50,5 +57,5 @@ internal abstract class KeyExchange
         return Hash(buffer);
     }
 
-    protected abstract byte[] Hash(ReadOnlySpan<byte> data);
+    public abstract byte[] Hash(ReadOnlySpan<byte> data);
 }

@@ -10,6 +10,23 @@ internal ref struct SshPacket
 
     public int WireLength => 4 + 1 + Payload.Length + Padding.Length + Mac.Length;
 
+    public static int GetExpectedLength(ReadOnlySpan<byte> buffer, int macLength)
+    {
+        if (buffer.Length < 4)
+        {
+            return 0;
+        }
+
+        var packetLength = BinaryPrimitives.ReadUInt32BigEndian(buffer);
+
+        if (packetLength < 1)
+        {
+            throw new ArgumentException("Corrupted packet length.");
+        }
+
+        return GetExpectedLength((int)packetLength, macLength);
+    }
+
     public static int GetExpectedLength(int packetLength, int macLength) => packetLength + 4 + macLength;
 
     public static bool TryRead(ReadOnlySpan<byte> buffer, int macLength, out SshPacket packet, out int consumed)

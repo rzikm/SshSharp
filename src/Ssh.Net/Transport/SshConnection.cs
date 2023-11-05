@@ -19,11 +19,21 @@ internal class SshConnection : IDisposable
 
     private readonly PacketReaderWriter _readerWriter;
 
+    private byte[] _sessionId = null!;
+
     private SshConnectionParameters _parameters = null!;
 
     private KeyExchange _keyExchange = null!;
 
     private HostKeyAlgorithm _hostKey = null!;
+
+    private EncryptionAlgorithm _clientToServerEncryption = NullEncryptionAlgorithm.Instance;
+
+    private EncryptionAlgorithm _serverToClientEncryption = NullEncryptionAlgorithm.Instance;
+
+    private MacAlgorithm _clientToServerMac = new NullMacAlgorithm();
+
+    private MacAlgorithm _serverToClientMac = new NullMacAlgorithm();
 
     public SshConnection(Socket socket)
     {
@@ -50,8 +60,13 @@ internal class SshConnection : IDisposable
 
         _stream.Write(Constants.VersionBytesCrLf);
 
-        // read key exchange packet
         DoKeyExchange();
+        AuthenticateUser();
+    }
+
+    private void AuthenticateUser()
+    {
+
     }
 
     private void DoKeyExchange()
@@ -79,10 +94,10 @@ internal class SshConnection : IDisposable
         _parameters = SshConnectionParameters.FromKeyExchangeInitPacket(serverKexPacket, clientKexPacket);
         _keyExchange = KeyExchange.Create(_parameters.KeyExchangeAlgorithm);
 
-        _readerWriter.SendPacket(clientKexPacket);
+        SendPacket(clientKexPacket);
 
         // send initial key exchange packet
-        _readerWriter.SendPacket(new KeyExchangeEcdhInitPacket
+        SendPacket(new KeyExchangeEcdhInitPacket
         {
             ClientEphemeralPublicKey = _keyExchange.EphemeralPublicKey,
         });
@@ -93,6 +108,8 @@ internal class SshConnection : IDisposable
         _keyExchange.DeriveSharedSecret(serverKexReply.ServerEphemeralPublicKey);
         var exchangeHash = _keyExchange.GetExchangeHash(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply);
 
+        _sessionId ??= exchangeHash;
+
         _hostKey = HostKeyAlgorithm.CreateFromWireData(serverKexReply.HostKey);
 
         if (!_hostKey.VerifyExchangeHashSignature(exchangeHash, serverKexReply.ExchangeHashSignature))
@@ -100,13 +117,48 @@ internal class SshConnection : IDisposable
             throw new Exception("Failed to verify exchange signature.");
         }
 
+        SendPacket(MessageId.SSH_MSG_NEWKEYS);
         ExpectMessage(MessageId.SSH_MSG_NEWKEYS);
-        _readerWriter.SendPacket(MessageId.SSH_MSG_NEWKEYS);
+        DeriveEncryptionKeys(exchangeHash);
+    }
+
+    private void DeriveEncryptionKeys(byte[] exchangeHash)
+    {
+        //   K = shared secret, H = exchange hash
+        //
+        //    o  Initial IV client to server: HASH(K || H || "A" || session_id)
+        //       (Here K is encoded as mpint and "A" as byte and session_id as raw
+        //       data.  "A" means the single character A, ASCII 65).
+        // 
+        //    o  Initial IV server to client: HASH(K || H || "B" || session_id)
+        // 
+        //    o  Encryption key client to server: HASH(K || H || "C" || session_id)
+        // 
+        //    o  Encryption key server to client: HASH(K || H || "D" || session_id)
+        // 
+        //    o  Integrity key client to server: HASH(K || H || "E" || session_id)
+        // 
+        //    o  Integrity key server to client: HASH(K || H || "F" || session_id)
+
+        byte[] HashHelper(char c) => _keyExchange.Hash(_keyExchange.SharedSecret!.Concat(exchangeHash).Concat(new byte[] { (byte)c }).Concat(_sessionId).ToArray());
+
+        var clientToServerIv = HashHelper('A');
+        var serverToClientIv = HashHelper('B');
+        var clientToServerEncryptionKey = HashHelper('C');
+        var serverToClientEncryptionKey = HashHelper('D');
+        var clientToServerMacKey = HashHelper('E');
+        var serverToClientMacKey = HashHelper('F');
+
+        _clientToServerEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmClientToServer, clientToServerIv, clientToServerEncryptionKey);
+        _serverToClientEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmServerToClient, serverToClientIv, serverToClientEncryptionKey);
+
+        _clientToServerMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, clientToServerMacKey);
+        _serverToClientMac = MacAlgorithm.Create(_parameters.MacAlgorithmServerToClient, _serverToClientMac.SequenceNumber, serverToClientMacKey);
     }
 
     private T ExpectMessage<T>() where T : IPacketPayload<T>
     {
-        var packet = _readerWriter.ReadPacket();
+        var packet = ReadPacket();
         if ((MessageId)packet.Payload[0] != T.MessageId)
         {
             if ((MessageId)packet.Payload[0] == MessageId.SSH_MSG_DISCONNECT)
@@ -130,7 +182,7 @@ internal class SshConnection : IDisposable
 
     private void ExpectMessage(MessageId messageId)
     {
-        var packet = _readerWriter.ReadPacket();
+        var packet = ReadPacket();
         if ((MessageId)packet.Payload[0] != messageId)
         {
             if ((MessageId)packet.Payload[0] == MessageId.SSH_MSG_DISCONNECT)
@@ -149,6 +201,14 @@ internal class SshConnection : IDisposable
     {
         return Encoding.UTF8.GetString(_readerWriter.ReadVersionString());
     }
+
+    private void SendPacket<T>(in T packet) where T : IPacketPayload<T> =>
+        _readerWriter.SendPacket(packet, _clientToServerEncryption, _clientToServerMac);
+
+    private void SendPacket(MessageId messageId) =>
+        _readerWriter.SendPacket(messageId, _clientToServerEncryption, _clientToServerMac);
+
+    private SshPacket ReadPacket() => _readerWriter.ReadPacket(_serverToClientEncryption, _serverToClientMac);
 
     public void Dispose()
     {

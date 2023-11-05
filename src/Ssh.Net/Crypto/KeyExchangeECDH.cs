@@ -6,13 +6,9 @@ internal class KeyExchangeECDH : KeyExchange, IDisposable
 {
     private readonly ECDiffieHellman _ecdh;
 
-    private byte[]? _secret;
-
     public ECCurve Curve { get; }
 
     public override byte[] EphemeralPublicKey { get; }
-
-    public override byte[]? SharedSecret => _secret;
 
     public KeyExchangeECDH(string name, ECCurve curve, byte[]? privateKey = null) : base(name)
     {
@@ -49,17 +45,18 @@ internal class KeyExchangeECDH : KeyExchange, IDisposable
         };
     }
 
-    public override void DeriveSharedSecret(byte[] otherPublicKey)
+    protected override byte[] DeriveSharedSecretCore(byte[] otherPublicKey)
     {
         using var otherEcdh = ECDiffieHellman.Create(new ECParameters
         {
             Curve = Curve,
             Q = GetECPointFromPublicKey(otherPublicKey)
         });
-        _secret = _ecdh.DeriveRawSecretAgreement(otherEcdh.PublicKey);
+
+        return _ecdh.DeriveRawSecretAgreement(otherEcdh.PublicKey)!;
     }
 
-    protected override byte[] Hash(ReadOnlySpan<byte> data)
+    public override byte[] Hash(ReadOnlySpan<byte> data)
     {
         // TODO: select hash based on the key exchange algorithm
         return SHA256.HashData(data);
