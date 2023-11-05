@@ -23,6 +23,8 @@ internal class SshConnection : IDisposable
 
     private KeyExchange _keyExchange = null!;
 
+    private HostKeyAlgorithm _hostKey = null!;
+
     public SshConnection(Socket socket)
     {
         _socket = socket;
@@ -88,13 +90,17 @@ internal class SshConnection : IDisposable
         var serverKexReply = ExpectMessage<KeyExchangeEcdhReplyPacket>();
         DebugHelpers.DumpKeyExchangeReplyPacket(serverKexReply);
 
-        if (!_keyExchange.VerifyExchangeSignature(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply))
+        _keyExchange.DeriveSharedSecret(serverKexReply.ServerEphemeralPublicKey);
+        var exchangeHash = _keyExchange.GetExchangeHash(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply);
+
+        _hostKey = HostKeyAlgorithm.CreateFromWireData(serverKexReply.HostKey);
+
+        if (!_hostKey.VerifyExchangeHashSignature(exchangeHash, serverKexReply.ExchangeHashSignature))
         {
             throw new Exception("Failed to verify exchange signature.");
         }
 
         ExpectMessage(MessageId.SSH_MSG_NEWKEYS);
-
         _readerWriter.SendPacket(MessageId.SSH_MSG_NEWKEYS);
     }
 
