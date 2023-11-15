@@ -1,4 +1,3 @@
-
 using Ssh.Net.Utils;
 
 namespace Ssh.Net.Packets;
@@ -33,6 +32,7 @@ internal struct Blueprint : IPacketPayload<Blueprint>
         }
 
         var writer = new SpanWriter(destination);
+        writer.WriteByte((byte)MessageId);
 
         return destination.Length - writer.RemainingBytes;
     }

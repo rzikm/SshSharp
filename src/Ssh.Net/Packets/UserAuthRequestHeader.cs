@@ -4,9 +4,8 @@ namespace Ssh.Net.Packets;
 
 struct UserAuthRequestHeader : IPacketPayload<UserAuthRequestHeader>
 {
-    public string Username { get; }
-    public string ServiceName { get; }
-    public string MethodName { get; }
+    public string Username { get; set; }
+    public string ServiceName { get; set; }
 
     public int WireLength => GetWireLength();
 
@@ -18,46 +17,46 @@ struct UserAuthRequestHeader : IPacketPayload<UserAuthRequestHeader>
 
         length += DataHelper.GetStringWireLength(Username);
         length += DataHelper.GetStringWireLength(ServiceName);
-        length += DataHelper.GetStringWireLength(MethodName);
 
         return length;
     }
 
-    public UserAuthRequestHeader(string username, string serviceName, string methodName)
+    public UserAuthRequestHeader(string username, string serviceName)
     {
         Username = username;
         ServiceName = serviceName;
-        MethodName = methodName;
     }
 
     public static bool TryRead(ReadOnlySpan<byte> buffer, out UserAuthRequestHeader header, out int consumed)
     {
-        consumed = 0;
         header = default;
 
         SpanReader reader = new(buffer);
 
         if (!reader.TryReadString(out var username) ||
-            !reader.TryReadString(out var serviceName) ||
-            !reader.TryReadString(out var methodName))
+            !reader.TryReadString(out var serviceName))
         {
             consumed = buffer.Length - reader.RemainingBytes;
             return false;
         }
 
         consumed = buffer.Length - reader.RemainingBytes;
-        header = new UserAuthRequestHeader(username, serviceName, methodName);
+        header = new UserAuthRequestHeader(username, serviceName);
         return true;
     }
 
-    static int IPacketPayload<UserAuthRequestHeader>.Write(Span<byte> destination, in UserAuthRequestHeader packet)
+    public static int Write(Span<byte> destination, in UserAuthRequestHeader packet)
     {
-        SpanWriter writer = new(destination);
+        if (destination.Length < packet.WireLength)
+        {
+            throw new ArgumentException("Destination buffer is too small.", nameof(destination));
+        }
 
-        writer.WriteByte((byte)MessageId.SSH_MSG_USERAUTH_REQUEST);
+        var writer = new SpanWriter(destination);
+        writer.WriteByte((byte)MessageId);
+
         writer.WriteString(packet.Username);
         writer.WriteString(packet.ServiceName);
-        writer.WriteString(packet.MethodName);
 
         return destination.Length - writer.RemainingBytes;
     }

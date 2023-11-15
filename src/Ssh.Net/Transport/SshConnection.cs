@@ -1,3 +1,4 @@
+using System.Buffers.Text;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
@@ -66,12 +67,31 @@ internal class SshConnection : IDisposable
 
     private void AuthenticateUser()
     {
-        System.Console.WriteLine("Sending ssh-userauth request");
         SendPacket(new ServiceRequestPacket
         {
             ServiceName = "ssh-userauth"
         });
         ExpectMessage(MessageId.SSH_MSG_SERVICE_ACCEPT);
+
+        ReadOnlySpan<byte> publicKeyBase64 = "AAAAB3NzaC1yc2EAAAADAQABAAABgQC7Jhv8tAlrjb7dFZH0dO8zbSXyZEF30WgDid9Qdp+IUntjK7sinIhUbRRi5JBokz/ddvPvGQ8INBA8Zs3YrJjY+wzmcJj9/2xaxiqR1fB2w7yFiRjt3m629fzeYqqTzDbaY3ab9YHeZC/Yzfg+o6AAzPfpjFOeE/iI9lX5p9lIboKyISS51WRIiQyMA4BJ2z64w6ymXwNp2WQ9usyk52liyNT1ZxbHzd1EiexPrJwYTMwZhfPZz5cMlSNYComcb+/HwXHJd+V7MaTdY92b4Z4STz/lPZk5hgVJ7Pfm3IOUpvJOYvhrSr6hBL4mCr4C7TPs6/IGYjYoZflMBtYVodKcKqTuH2t8bWFxW9irOs14ymBvLsQ/o/Hnyl6Qpa3cTHiOYBjqXY4xDWNwmeww3sVPzvWll649K9eO3g7yWFoIENtOpGLu2dvJIklX9WyvqUHH6eIieKCORUgEOkfJYVOUiF7Y0yoazWmN6Bz2pE+n+d5BFvElqCheY6N4d4Q6XEs="u8;
+
+        Span<byte> publicKeyBytes = stackalloc byte[publicKeyBase64.Length];
+        Base64.DecodeFromUtf8(publicKeyBase64, publicKeyBytes, out _, out var bytesWritten);
+        byte[] publicKey = publicKeyBytes.Slice(0, bytesWritten).ToArray();
+
+        SendPacket(new UserAuthRequestHeader
+        {
+            Username = "europe\\radekzikmund",
+            ServiceName = "ssh-connection",
+        }, new UserauthPublicKeyData
+        {
+            AlgorithmName = "ssh-rsa",
+            PublicKey = publicKey
+        });
+
+        var packet = ExpectMessage<UserauthFailurePacket>();
+        System.Console.WriteLine($"Auth methods: {string.Join(", ", packet.AuthThatCanContinue)}");
+        System.Console.WriteLine($"PartialSuccess: {packet.PartialSuccess}");
     }
 
     private void DoKeyExchange()
@@ -205,8 +225,11 @@ internal class SshConnection : IDisposable
         return Encoding.UTF8.GetString(_readerWriter.ReadVersionString());
     }
 
-    private void SendPacket<T>(in T packet) where T : IPacketPayload<T> =>
+    private void SendPacket<TPacket>(in TPacket packet) where TPacket : IPacketPayload<TPacket> =>
         _readerWriter.SendPacket(packet, _clientToServerEncryption, _clientToServerMac);
+
+    private void SendPacket<TAuth>(in UserAuthRequestHeader header, in TAuth auth) where TAuth : IUserauthMethod<TAuth> =>
+        _readerWriter.SendPacket(header, auth, _clientToServerEncryption, _clientToServerMac);
 
     private void SendPacket(MessageId messageId) =>
         _readerWriter.SendPacket(messageId, _clientToServerEncryption, _clientToServerMac);

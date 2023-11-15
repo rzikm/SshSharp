@@ -13,6 +13,14 @@ internal static class PacketHelpers
 
         return WritePayload(destination, payload.Slice(0, written), encryption, mac);
     }
+    public static int WritePayload<TAuth>(Span<byte> destination, UserAuthRequestHeader header, TAuth auth, EncryptionAlgorithm encryption, MacAlgorithm mac) where TAuth : IUserauthMethod<TAuth>
+    {
+        Span<byte> payload = stackalloc byte[header.WireLength + auth.WireLength];
+        int written = UserAuthRequestHeader.Write(payload, header);
+        written += TAuth.Write(payload.Slice(written), auth);
+
+        return WritePayload(destination, payload.Slice(0, written), encryption, mac);
+    }
 
     public static int WritePayload(Span<byte> destination, ReadOnlySpan<byte> payload) => WritePayload(destination, payload, NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
 

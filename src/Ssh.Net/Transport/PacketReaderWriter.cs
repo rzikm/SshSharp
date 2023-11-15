@@ -86,6 +86,12 @@ internal class PacketReaderWriter : IDisposable
         return _recvBuffer.AsSpan(0, index);
     }
 
+    public void SendPacket<TAuth>(in UserAuthRequestHeader header, in TAuth auth, EncryptionAlgorithm encryption, MacAlgorithm mac) where TAuth : IUserauthMethod<TAuth>
+    {
+        int written = PacketHelpers.WritePayload(_sendBuffer, header, auth, encryption, mac);
+        _stream.Write(_sendBuffer.AsSpan(0, written));
+    }
+
     public void SendPacket<T>(in T packet, EncryptionAlgorithm encryption, MacAlgorithm mac) where T : IPacketPayload<T>
     {
         int written = PacketHelpers.WritePayload(_sendBuffer, packet, encryption, mac);
