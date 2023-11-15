@@ -13,6 +13,8 @@ internal abstract class KeyExchange
 
     public byte[]? SharedSecret { get; private set; }
 
+    public HashAlgorithm HashAlgorithm { get; }
+
     protected abstract byte[] DeriveSharedSecretCore(byte[] otherPublicKey);
 
     [MemberNotNull(nameof(SharedSecret))]
@@ -21,9 +23,10 @@ internal abstract class KeyExchange
         SharedSecret = DeriveSharedSecretCore(otherPublicKey);
     }
 
-    public KeyExchange(string name)
+    public KeyExchange(string name, HashAlgorithm hashAlgorithm)
     {
         Name = name;
+        HashAlgorithm = hashAlgorithm;
     }
 
     public static KeyExchange Create(string keyExchangeAlgorithm)
@@ -31,7 +34,7 @@ internal abstract class KeyExchange
         return keyExchangeAlgorithm switch
         {
             "curve25519-sha256" => new KeyExchangeCurve25519Sha256(),
-            "ecdh-sha2-nistp256" => new KeyExchangeECDH(keyExchangeAlgorithm, ECCurve.NamedCurves.nistP256),
+            "ecdh-sha2-nistp256" => new KeyExchangeECDH(keyExchangeAlgorithm, ECCurve.NamedCurves.nistP256, SHA256.Create()),
             _ => throw new Exception($"Unsupported key exchange algorithm: {keyExchangeAlgorithm}")
         };
     }
@@ -54,8 +57,8 @@ internal abstract class KeyExchange
         writer.WriteBigInt(SharedSecret);
         buffer = buffer.Slice(0, buffer.Length - writer.RemainingBytes);
 
-        return Hash(buffer);
-    }
+        byte[] result = new byte[HashAlgorithm.HashSize / 8];
 
-    public abstract byte[] Hash(ReadOnlySpan<byte> data);
+        return HashAlgorithm.TryComputeHash(buffer, result, out _) ? result : throw new Exception("Failed to compute hash.");
+    }
 }

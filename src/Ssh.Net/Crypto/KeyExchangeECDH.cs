@@ -10,7 +10,7 @@ internal class KeyExchangeECDH : KeyExchange, IDisposable
 
     public override byte[] EphemeralPublicKey { get; }
 
-    public KeyExchangeECDH(string name, ECCurve curve, byte[]? privateKey = null) : base(name)
+    public KeyExchangeECDH(string name, ECCurve curve, HashAlgorithm hashAlgorithm, byte[]? privateKey = null) : base(name, hashAlgorithm)
     {
         Curve = curve;
 
@@ -54,12 +54,6 @@ internal class KeyExchangeECDH : KeyExchange, IDisposable
         });
 
         return _ecdh.DeriveRawSecretAgreement(otherEcdh.PublicKey)!;
-    }
-
-    public override byte[] Hash(ReadOnlySpan<byte> data)
-    {
-        // TODO: select hash based on the key exchange algorithm
-        return SHA256.HashData(data);
     }
 
     public void Dispose()

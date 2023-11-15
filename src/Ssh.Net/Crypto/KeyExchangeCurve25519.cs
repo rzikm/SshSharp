@@ -7,7 +7,7 @@ namespace Ssh.Net.Crypto;
 
 internal class KeyExchangeCurve25519Sha256 : KeyExchangeECDH, IDisposable
 {
-    public KeyExchangeCurve25519Sha256(byte[]? privateKey = null) : base("curve25519-sha256", ECCurves.Curve25519, privateKey)
+    public KeyExchangeCurve25519Sha256(byte[]? privateKey = null) : base("curve25519-sha256", ECCurves.Curve25519, SHA256.Create(), privateKey)
     {
     }
 
@@ -24,10 +24,5 @@ internal class KeyExchangeCurve25519Sha256 : KeyExchangeECDH, IDisposable
             X = otherPartyPublicKey,
             Y = new byte[32]
         };
-    }
-
-    public override byte[] Hash(ReadOnlySpan<byte> data)
-    {
-        return SHA256.HashData(data);
     }
 }

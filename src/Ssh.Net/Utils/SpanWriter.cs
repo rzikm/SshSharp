@@ -14,6 +14,12 @@ internal ref struct SpanWriter
         _buffer = buffer;
     }
 
+    public void WriteRawData(ReadOnlySpan<byte> value)
+    {
+        value.CopyTo(_buffer);
+        _buffer = _buffer.Slice(value.Length);
+    }
+
     public void WriteString(string? value)
     {
         if (value == null)
