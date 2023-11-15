@@ -10,6 +10,8 @@ internal abstract class MacAlgorithm
 
     public abstract int MacSize { get; }
 
+    public abstract int KeySize { get; }
+
     public uint SequenceNumber { get; private set; }
 
     public MacAlgorithm(uint initialSequenceNumber)
@@ -34,12 +36,12 @@ internal abstract class MacAlgorithm
 
     protected abstract bool VerifyInternal(ReadOnlySpan<byte> buffer, ReadOnlySpan<byte> signature);
 
-    public static MacAlgorithm Create(string name, uint initialSequenceNumber, byte[] key)
+    public static MacAlgorithm Create(string name, uint initialSequenceNumber, Func<int, byte[]> keyGenerator)
     {
         return name switch
         {
             "none" => NullMacAlgorithm.Instance,
-            "hmac-sha1" => new HmacShaMacAlgorithm(initialSequenceNumber, key),
+            "hmac-sha1" => new HmacShaMacAlgorithm(initialSequenceNumber, keyGenerator(20)),
             // "hmac-sha2-256" => new HmacSha256MacAlgorithm(key),
             // "hmac-sha2-512" => new HmacSha512MacAlgorithm(key),
             _ => throw new Exception($"Unsupported mac algorithm: {name}")
@@ -53,12 +55,14 @@ internal class HmacShaMacAlgorithm : MacAlgorithm
 
     public HmacShaMacAlgorithm(uint sequence, byte[] key) : base(sequence)
     {
+        // System.Console.WriteLine($"Mac key: {BitConverter.ToString(key)}");
         this.key = key;
     }
 
     public override string Name => "hmac-sha1";
 
     public override int MacSize => SHA1.HashSizeInBytes;
+    public override int KeySize => SHA1.HashSizeInBytes;
 
     protected override void SignInternal(Span<byte> buffer, Span<byte> signature)
     {
@@ -93,6 +97,8 @@ internal class NullMacAlgorithm : MacAlgorithm
     public override string Name => "none";
 
     public override int MacSize => 0;
+
+    public override int KeySize => 0;
 
     protected override void SignInternal(Span<byte> buffer, Span<byte> signature)
     {

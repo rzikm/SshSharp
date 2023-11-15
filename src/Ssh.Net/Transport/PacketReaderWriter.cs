@@ -52,9 +52,9 @@ internal class PacketReaderWriter : IDisposable
         }
 
         // decrypt the rest
-        encryption.Decrypt(_recvBuffer.AsSpan(encryption.BlockSize, totalLength - encryption.BlockSize));
+        encryption.Decrypt(_recvBuffer.AsSpan(encryption.BlockSize, totalLength - encryption.BlockSize - mac.MacSize));
 
-        if (!SshPacket.TryRead(_recvBuffer.AsSpan(0, _bytes), 0, out packet, out consumed))
+        if (!SshPacket.TryRead(_recvBuffer.AsSpan(0, _bytes), mac.MacSize, out packet, out consumed))
         {
             throw new Exception("Corrupted packet.");
         }
@@ -89,6 +89,7 @@ internal class PacketReaderWriter : IDisposable
     public void SendPacket<T>(in T packet, EncryptionAlgorithm encryption, MacAlgorithm mac) where T : IPacketPayload<T>
     {
         int written = PacketHelpers.WritePayload(_sendBuffer, packet, encryption, mac);
+        // System.Console.WriteLine($"Sending {written} bytes: {BitConverter.ToString(_sendBuffer.AsSpan(0, written).ToArray())}");
         _stream.Write(_sendBuffer.AsSpan(0, written));
     }
 

@@ -44,8 +44,6 @@ internal class HostKeyRsa : HostKeyAlgorithm
             throw new Exception("Invalid signature");
         }
 
-        System.Console.WriteLine($"Signature type: {signatureType}");
-
         var hashAlgorithmName = signatureType switch
         {
             "ssh-rsa" => HashAlgorithmName.SHA1,
@@ -57,7 +55,6 @@ internal class HostKeyRsa : HostKeyAlgorithm
         // Hash again and verify again against the host key
         var result = _rsa.VerifyData(hash, signature, hashAlgorithmName, RSASignaturePadding.Pkcs1);
 
-        System.Console.WriteLine($"Signature verified: {result}");
         return result;
     }
 }

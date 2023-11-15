@@ -19,7 +19,7 @@ internal static class PacketHelpers
     public static int WritePayload(Span<byte> destination, ReadOnlySpan<byte> payload, EncryptionAlgorithm encryption, MacAlgorithm mac)
     {
         // at least 4 bytes of padding, add another 8 to make sure we can subtract up to 8 bytes for alignment
-        int padding = Random.Shared.Next(12, 256);
+        int padding = Random.Shared.Next(20, 30);
         int lenWithoutMac = 5 + payload.Length + padding;
 
         // length without mac must be divisible by 8 or block size, whichever is higher

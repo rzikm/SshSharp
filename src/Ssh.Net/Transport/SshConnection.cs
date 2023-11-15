@@ -66,13 +66,18 @@ internal class SshConnection : IDisposable
 
     private void AuthenticateUser()
     {
-
+        System.Console.WriteLine("Sending ssh-userauth request");
+        SendPacket(new ServiceRequestPacket
+        {
+            ServiceName = "ssh-userauth"
+        });
+        ExpectMessage(MessageId.SSH_MSG_SERVICE_ACCEPT);
     }
 
     private void DoKeyExchange()
     {
         var serverKexPacket = ExpectMessage<KeyExchangeInitPacket>();
-        DebugHelpers.DumpKeyExchangePacket(serverKexPacket);
+        // DebugHelpers.DumpKeyExchangePacket(serverKexPacket);
 
         var clientKexPacket = new KeyExchangeInitPacket()
         {
@@ -103,7 +108,7 @@ internal class SshConnection : IDisposable
         });
 
         var serverKexReply = ExpectMessage<KeyExchangeEcdhReplyPacket>();
-        DebugHelpers.DumpKeyExchangeReplyPacket(serverKexReply);
+        // DebugHelpers.DumpKeyExchangeReplyPacket(serverKexReply);
 
         _keyExchange.DeriveSharedSecret(serverKexReply.ServerEphemeralPublicKey);
         var exchangeHash = _keyExchange.GetExchangeHash(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply);
@@ -140,20 +145,18 @@ internal class SshConnection : IDisposable
         // 
         //    o  Integrity key server to client: HASH(K || H || "F" || session_id)
 
-        byte[] HashHelper(char c) => _keyExchange.Hash(_keyExchange.SharedSecret!.Concat(exchangeHash).Concat(new byte[] { (byte)c }).Concat(_sessionId).ToArray());
+        byte[] HashHelper(char c, int len) => KeyGenerationHelpers.DeriveSessionKey(_keyExchange.SharedSecret, exchangeHash, c, _sessionId, _keyExchange, len);
 
-        var clientToServerIv = HashHelper('A');
-        var serverToClientIv = HashHelper('B');
-        var clientToServerEncryptionKey = HashHelper('C');
-        var serverToClientEncryptionKey = HashHelper('D');
-        var clientToServerMacKey = HashHelper('E');
-        var serverToClientMacKey = HashHelper('F');
+        _clientToServerEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmClientToServer,
+            l => HashHelper('A', l),
+            l => HashHelper('C', l));
 
-        _clientToServerEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmClientToServer, clientToServerIv, clientToServerEncryptionKey);
-        _serverToClientEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmServerToClient, serverToClientIv, serverToClientEncryptionKey);
+        _serverToClientEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmServerToClient,
+            l => HashHelper('B', l),
+            l => HashHelper('D', l));
 
-        _clientToServerMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, clientToServerMacKey);
-        _serverToClientMac = MacAlgorithm.Create(_parameters.MacAlgorithmServerToClient, _serverToClientMac.SequenceNumber, serverToClientMacKey);
+        _clientToServerMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, l => HashHelper('E', l));
+        _serverToClientMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, l => HashHelper('F', l));
     }
 
     private T ExpectMessage<T>() where T : IPacketPayload<T>
@@ -207,6 +210,9 @@ internal class SshConnection : IDisposable
 
     private void SendPacket(MessageId messageId) =>
         _readerWriter.SendPacket(messageId, _clientToServerEncryption, _clientToServerMac);
+
+    private void SendPacket(MessageId messageId, string param) =>
+        _readerWriter.SendPacket(messageId, param, _clientToServerEncryption, _clientToServerMac);
 
     private SshPacket ReadPacket() => _readerWriter.ReadPacket(_serverToClientEncryption, _serverToClientMac);
 

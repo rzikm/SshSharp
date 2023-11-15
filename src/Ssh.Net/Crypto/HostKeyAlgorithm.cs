@@ -14,8 +14,6 @@ internal abstract class HostKeyAlgorithm
             throw new Exception("Failed to read host key name identifier");
         }
 
-        Console.WriteLine($"Host key algorithm: {hostKeyAlgorithm}");
-
         switch (hostKeyAlgorithm)
         {
             case "ssh-rsa":

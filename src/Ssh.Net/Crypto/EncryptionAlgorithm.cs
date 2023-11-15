@@ -1,3 +1,4 @@
+using System;
 using System.Security.Cryptography;
 using Ssh.Net.Utils;
 
@@ -12,14 +13,14 @@ internal abstract class EncryptionAlgorithm
     public abstract void Encrypt(Span<byte> buffer);
     public abstract void Decrypt(Span<byte> buffer);
 
-    public static EncryptionAlgorithm Create(string name, byte[] iv, byte[] key)
+    public static EncryptionAlgorithm Create(string name, Func<int, byte[]> ivGenerator, Func<int, byte[]> keyGenerator)
     {
         return name switch
         {
             "none" => NullEncryptionAlgorithm.Instance,
-            "aes128-ctr" => new AesCtrEncryptionAlgorithm(name, 128, iv, key),
-            "aes192-ctr" => new AesCtrEncryptionAlgorithm(name, 192, iv, key),
-            "aes256-ctr" => new AesCtrEncryptionAlgorithm(name, 256, iv, key),
+            "aes128-ctr" => new AesCtrEncryptionAlgorithm(name, 128, ivGenerator(16), keyGenerator(128 / 8)),
+            "aes192-ctr" => new AesCtrEncryptionAlgorithm(name, 192, ivGenerator(16), keyGenerator(192 / 8)),
+            "aes256-ctr" => new AesCtrEncryptionAlgorithm(name, 256, ivGenerator(16), keyGenerator(256 / 8)),
             _ => throw new Exception($"Unsupported encryption algorithm: {name}")
         };
     }
@@ -34,6 +35,9 @@ internal class AesCtrEncryptionAlgorithm : EncryptionAlgorithm
     public AesCtrEncryptionAlgorithm(string name, int v, byte[] iv, byte[] key)
     {
         Name = name;
+
+        // System.Console.WriteLine($"IV: {BitConverter.ToString(iv)}");
+        // System.Console.WriteLine($"Key: {BitConverter.ToString(key)}");
 
         _aes = Aes.Create();
         _aes.KeySize = v;
