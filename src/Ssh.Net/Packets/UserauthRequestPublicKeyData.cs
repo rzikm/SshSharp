@@ -52,6 +52,8 @@ internal struct UserauthPublicKeyData : IUserauthMethod<UserauthPublicKeyData>
 
     public static void Write(ref SpanWriter writer, in UserauthPublicKeyData payload)
     {
+        writer.WriteString(Name);
+
         writer.WriteBoolean(payload.Signature != null);
         writer.WriteString(payload.AlgorithmName);
         writer.WriteString(payload.PublicKey);

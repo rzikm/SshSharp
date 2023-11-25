@@ -1,6 +1,8 @@
 using System.Buffers.Text;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using Ssh.Net.Crypto;
 using Ssh.Net.Packets;
@@ -73,25 +75,75 @@ internal class SshConnection : IDisposable
         });
         ExpectMessage(MessageId.SSH_MSG_SERVICE_ACCEPT);
 
-        ReadOnlySpan<byte> publicKeyBase64 = "AAAAB3NzaC1yc2EAAAADAQABAAABgQC7Jhv8tAlrjb7dFZH0dO8zbSXyZEF30WgDid9Qdp+IUntjK7sinIhUbRRi5JBokz/ddvPvGQ8INBA8Zs3YrJjY+wzmcJj9/2xaxiqR1fB2w7yFiRjt3m629fzeYqqTzDbaY3ab9YHeZC/Yzfg+o6AAzPfpjFOeE/iI9lX5p9lIboKyISS51WRIiQyMA4BJ2z64w6ymXwNp2WQ9usyk52liyNT1ZxbHzd1EiexPrJwYTMwZhfPZz5cMlSNYComcb+/HwXHJd+V7MaTdY92b4Z4STz/lPZk5hgVJ7Pfm3IOUpvJOYvhrSr6hBL4mCr4C7TPs6/IGYjYoZflMBtYVodKcKqTuH2t8bWFxW9irOs14ymBvLsQ/o/Hnyl6Qpa3cTHiOYBjqXY4xDWNwmeww3sVPzvWll649K9eO3g7yWFoIENtOpGLu2dvJIklX9WyvqUHH6eIieKCORUgEOkfJYVOUiF7Y0yoazWmN6Bz2pE+n+d5BFvElqCheY6N4d4Q6XEs="u8;
+        SshPublicKey publicKey = SshPublicKey.FromPrivateKeyFile(@"C:\Users\radekzikmund\.ssh\id_rsa");
 
-        Span<byte> publicKeyBytes = stackalloc byte[publicKeyBase64.Length];
-        Base64.DecodeFromUtf8(publicKeyBase64, publicKeyBytes, out _, out var bytesWritten);
-        byte[] publicKey = publicKeyBytes.Slice(0, bytesWritten).ToArray();
-
-        SendPacket(new UserAuthRequestHeader
+        var header = new UserAuthRequestHeader
         {
-            Username = "europe\\radekzikmund",
+            Username = "EUROPE\\radekzikmund",
             ServiceName = "ssh-connection",
-        }, new UserauthPublicKeyData
-        {
-            AlgorithmName = "ssh-rsa",
-            PublicKey = publicKey
-        });
+        };
 
-        var packet = ExpectMessage<UserauthFailurePacket>();
-        System.Console.WriteLine($"Auth methods: {string.Join(", ", packet.AuthThatCanContinue)}");
-        System.Console.WriteLine($"PartialSuccess: {packet.PartialSuccess}");
+        bool authenticated = false;
+
+        Span<byte> signatureSrc = stackalloc byte[2048];
+
+        foreach (var authAlg in publicKey.GetAlgorithms())
+        {
+            System.Console.WriteLine($"Attempting auth via: {authAlg.AlgorithmName}");
+
+            var publicKeyData = new UserauthPublicKeyData
+            {
+                AlgorithmName = authAlg.AlgorithmName,
+                PublicKey = authAlg.PublicKey
+            };
+
+            SendPacket(header, publicKeyData);
+
+            var replyPacket = ReadPacket();
+            if (replyPacket.MessageId == MessageId.SSH_MSG_USERAUTH_FAILURE)
+            {
+                System.Console.WriteLine($"Rejected: {authAlg.AlgorithmName}");
+
+                var failurePacket = replyPacket.ParsePayload<UserauthFailurePacket>();
+                // Console.WriteLine($"Auth methods: {string.Join(", ", failurePacket.AuthThatCanContinue)}");
+                // Console.WriteLine($"PartialSuccess: {failurePacket.PartialSuccess}");
+                continue;
+            }
+
+            {
+                var packet = replyPacket.ParsePayload<UserauthPublicKeyOkPacket>();
+                if (packet.AlgorithmName != publicKeyData.AlgorithmName)
+                {
+                    throw new Exception($"Server accepted different algorithm: {packet.AlgorithmName}.");
+                }
+                if (!packet.PublicKey.AsSpan().SequenceEqual(publicKeyData.PublicKey))
+                {
+                    throw new Exception($"Server accepted different public key.");
+                }
+                Console.WriteLine("Public key accepted, retrying with signature.");
+            }
+
+            // temporarily put empty array in signature to force TRUE in the "has signature" field for signature computation
+            publicKeyData.Signature = Array.Empty<byte>();
+
+            SpanWriter writer = new(signatureSrc);
+            writer.WriteString(_sessionId);
+            UserAuthRequestHeader.Write(ref writer, header);
+            UserauthPublicKeyData.Write(ref writer, publicKeyData);
+            signatureSrc = signatureSrc.Slice(0, signatureSrc.Length - writer.RemainingBytes - 4);
+
+            publicKeyData.Signature = authAlg.GetSignature(signatureSrc);
+
+            SendPacket(header, publicKeyData);
+            ExpectMessage(MessageId.SSH_MSG_USERAUTH_SUCCESS);
+            authenticated = true;
+            break;
+        }
+
+        if (authenticated)
+        {
+            Console.WriteLine("User auth successful");
+        }
     }
 
     private void DoKeyExchange()
@@ -182,41 +234,36 @@ internal class SshConnection : IDisposable
     private T ExpectMessage<T>() where T : IPacketPayload<T>
     {
         var packet = ReadPacket();
-        if ((MessageId)packet.Payload[0] != T.MessageId)
+        if (packet.MessageId != T.MessageId)
         {
-            if ((MessageId)packet.Payload[0] == MessageId.SSH_MSG_DISCONNECT)
+            if (packet.MessageId == MessageId.SSH_MSG_DISCONNECT)
             {
-                if (DisconnectPacket.TryRead(packet.Payload, out var disconnectPacket, out _))
+                if (packet.TryParsePayload(out DisconnectPacket disconnectPacket, out _))
                 {
                     throw new Exception($"Disconnected: [{disconnectPacket.ReasonCode}] {disconnectPacket.Description}");
                 }
             }
 
-            throw new Exception($"Expected {T.MessageId}, got {(MessageId)packet.Payload[0]}.");
+            throw new Exception($"Expected {T.MessageId}, got {packet.MessageId}.");
         }
 
-        if (!T.TryRead(packet.Payload, out var payload, out _))
-        {
-            throw new Exception($"Failed to read {typeof(T).Name}.");
-        }
-
-        return payload;
+        return packet.ParsePayload<T>();
     }
 
     private void ExpectMessage(MessageId messageId)
     {
         var packet = ReadPacket();
-        if ((MessageId)packet.Payload[0] != messageId)
+        if (packet.MessageId != messageId)
         {
-            if ((MessageId)packet.Payload[0] == MessageId.SSH_MSG_DISCONNECT)
+            if (packet.MessageId == MessageId.SSH_MSG_DISCONNECT)
             {
-                if (DisconnectPacket.TryRead(packet.Payload, out var disconnectPacket, out _))
+                if (packet.TryParsePayload(out DisconnectPacket disconnectPacket, out _))
                 {
                     throw new Exception($"Disconnected: [{disconnectPacket.ReasonCode}] {disconnectPacket.Description}");
                 }
             }
 
-            throw new Exception($"Expected {messageId}, got {(MessageId)packet.Payload[0]}.");
+            throw new Exception($"Expected {messageId}, got {packet.MessageId}.");
         }
     }
 
@@ -244,4 +291,5 @@ internal class SshConnection : IDisposable
         _socket.Dispose();
         _readerWriter.Dispose();
     }
+
 }

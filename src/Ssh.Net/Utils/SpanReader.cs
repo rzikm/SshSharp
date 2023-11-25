@@ -78,4 +78,18 @@ internal ref struct SpanReader
     public bool TryReadUInt16(out ushort value) => TryReadPrimitive(out value);
     public bool TryReadUInt32(out uint value) => TryReadPrimitive(out value);
     public bool TryReadByte(out byte value) => TryReadPrimitive(out value);
+
+    public bool TryReadRawBytes(int length, out ReadOnlySpan<byte> value)
+    {
+        if (_buffer.Length < length)
+        {
+            value = default;
+            return false;
+        }
+
+        value = _buffer.Slice(0, length);
+        _buffer = _buffer.Slice(length);
+
+        return true;
+    }
 }
