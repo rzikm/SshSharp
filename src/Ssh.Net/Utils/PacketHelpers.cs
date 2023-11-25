@@ -9,16 +9,19 @@ internal static class PacketHelpers
     public static int WritePayload<T>(Span<byte> destination, T packet, EncryptionAlgorithm encryption, MacAlgorithm mac) where T : IPacketPayload<T>
     {
         Span<byte> payload = stackalloc byte[packet.WireLength];
-        int written = T.Write(payload, packet);
+        int written = IPacketPayload<T>.Write(payload, packet);
 
         return WritePayload(destination, payload.Slice(0, written), encryption, mac);
     }
     public static int WritePayload<TAuth>(Span<byte> destination, UserAuthRequestHeader header, TAuth auth, EncryptionAlgorithm encryption, MacAlgorithm mac) where TAuth : IUserauthMethod<TAuth>
     {
         Span<byte> payload = stackalloc byte[header.WireLength + auth.WireLength];
-        int written = UserAuthRequestHeader.Write(payload, header);
-        written += TAuth.Write(payload.Slice(written), auth);
+        SpanWriter writer = new(payload);
 
+        UserAuthRequestHeader.Write(ref writer, header);
+        TAuth.Write(ref writer, auth);
+
+        int written = payload.Length - writer.RemainingBytes;
         return WritePayload(destination, payload.Slice(0, written), encryption, mac);
     }
 

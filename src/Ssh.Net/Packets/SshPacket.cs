@@ -1,4 +1,6 @@
 using System.Buffers.Binary;
+using System.Diagnostics;
+using System.Diagnostics.CodeAnalysis;
 
 namespace Ssh.Net.Packets;
 
@@ -7,6 +9,8 @@ internal ref struct SshPacket
     public ReadOnlySpan<byte> Payload { get; set; }
     public ReadOnlySpan<byte> Padding { get; set; }
     public ReadOnlySpan<byte> Mac { get; set; }
+
+    public MessageId MessageId => (MessageId)(Payload.Length > 0 ? Payload[0] : 0);
 
     public int WireLength => 4 + 1 + Payload.Length + Padding.Length + Mac.Length;
 
@@ -82,5 +86,32 @@ internal ref struct SshPacket
         packet.Payload.CopyTo(destination.Slice(5));
         packet.Padding.CopyTo(destination.Slice(5 + packet.Payload.Length));
         packet.Mac.CopyTo(destination.Slice(5 + packet.Payload.Length + packet.Padding.Length));
+    }
+
+    public bool TryParsePayload<TPayload>([NotNullWhen(true)] out TPayload? payload, out int consumed)
+        where TPayload : IPacketPayload<TPayload>
+    {
+        Debug.Assert(MessageId == TPayload.MessageId);
+
+        payload = default;
+        consumed = 0;
+
+        if (Payload.Length < 1)
+        {
+            return false;
+        }
+
+        return IPacketPayload<TPayload>.TryRead(Payload, out payload, out consumed);
+    }
+
+    public TPayload ParsePayload<TPayload>()
+        where TPayload : IPacketPayload<TPayload>
+    {
+        if (!TryParsePayload(out TPayload? payload, out _))
+        {
+            throw new Exception($"Failed to parse payload of type {typeof(TPayload).Name}.");
+        }
+
+        return payload;
     }
 }

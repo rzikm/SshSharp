@@ -23,16 +23,14 @@ internal struct DisconnectPacket : IPacketPayload<DisconnectPacket>
         return length;
     }
 
-    public static bool TryRead(ReadOnlySpan<byte> buffer, out DisconnectPacket payload, out int consumed)
+    public static bool TryRead(ref SpanReader reader, out DisconnectPacket payload)
     {
-        var reader = new SpanReader(buffer.Slice(1)); // skip message id
-
-        if (!reader.TryReadUInt32(out var reasonCode) ||
+        if (!reader.TryReadByte(out var messageId) || messageId != (byte)MessageId ||
+            !reader.TryReadUInt32(out var reasonCode) ||
             !reader.TryReadString(out var description) ||
             !reader.TryReadString(out var languageTag))
         {
             payload = default;
-            consumed = buffer.Length - reader.RemainingBytes;
             return false;
         }
 
@@ -42,24 +40,15 @@ internal struct DisconnectPacket : IPacketPayload<DisconnectPacket>
             Description = description,
             LanguageTag = languageTag
         };
-        consumed = buffer.Length - reader.RemainingBytes;
+
         return true;
     }
 
-    public static int Write(Span<byte> destination, in DisconnectPacket packet)
+    public static void Write(ref SpanWriter writer, in DisconnectPacket payload)
     {
-        if (destination.Length < packet.WireLength)
-        {
-            throw new ArgumentException("Destination buffer is too small.", nameof(destination));
-        }
-
-        var writer = new SpanWriter(destination);
-
         writer.WriteByte((byte)MessageId.SSH_MSG_DISCONNECT);
-        writer.WriteUInt32(packet.ReasonCode);
-        writer.WriteString(packet.Description);
-        writer.WriteString(packet.LanguageTag);
-
-        return destination.Length - writer.RemainingBytes;
+        writer.WriteUInt32(payload.ReasonCode);
+        writer.WriteString(payload.Description);
+        writer.WriteString(payload.LanguageTag);
     }
 }

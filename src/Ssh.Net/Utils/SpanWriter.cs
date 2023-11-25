@@ -113,7 +113,7 @@ internal ref struct SpanWriter
 
     public void WritePayloadAsString<T>(in T packet) where T : IPacketPayload<T>
     {
-        int written = T.Write(_buffer.Slice(4), packet);
+        int written = IPacketPayload<T>.Write(_buffer.Slice(4), packet);
         BinaryPrimitives.WriteUInt32BigEndian(_buffer, (uint)written);
         _buffer = _buffer.Slice(4 + written);
     }

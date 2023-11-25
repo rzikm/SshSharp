@@ -77,4 +77,5 @@ internal ref struct SpanReader
     public bool TryReadUInt128(out UInt128 value) => TryReadPrimitive(out value);
     public bool TryReadUInt16(out ushort value) => TryReadPrimitive(out value);
     public bool TryReadUInt32(out uint value) => TryReadPrimitive(out value);
+    public bool TryReadByte(out byte value) => TryReadPrimitive(out value);
 }

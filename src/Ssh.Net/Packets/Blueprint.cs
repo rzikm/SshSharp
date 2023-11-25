@@ -15,25 +15,20 @@ internal struct Blueprint : IPacketPayload<Blueprint>
         return length;
     }
 
-    public static bool TryRead(ReadOnlySpan<byte> buffer, out Blueprint payload, out int consumed)
+    public static bool TryRead(ref SpanReader reader, out Blueprint payload)
     {
-        var reader = new SpanReader(buffer.Slice(1)); // skip message id
+        if (!reader.TryReadByte(out var messageId) || messageId != (byte)MessageId)
+        {
+            payload = default;
+            return false;
+        }
 
         payload = new Blueprint();
-        consumed = buffer.Length - reader.RemainingBytes;
         return true;
     }
 
-    public static int Write(Span<byte> destination, in Blueprint packet)
+    public static void Write(ref SpanWriter writer, in Blueprint payload)
     {
-        if (destination.Length < packet.WireLength)
-        {
-            throw new ArgumentException("Destination buffer is too small.", nameof(destination));
-        }
-
-        var writer = new SpanWriter(destination);
         writer.WriteByte((byte)MessageId);
-
-        return destination.Length - writer.RemainingBytes;
     }
 }

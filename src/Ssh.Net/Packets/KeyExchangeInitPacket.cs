@@ -43,11 +43,10 @@ internal struct KeyExchangeInitPacket : IPacketPayload<KeyExchangeInitPacket>
         return length;
     }
 
-    public static bool TryRead(ReadOnlySpan<byte> buffer, out KeyExchangeInitPacket packet, out int consumed)
+    public static bool TryRead(ref SpanReader reader, out KeyExchangeInitPacket payload)
     {
-        var reader = new SpanReader(buffer.Slice(1)); // skip message id
-
-        if (!reader.TryReadUInt128(out var cookie) ||
+        if (!reader.TryReadByte(out var messageId) || messageId != (byte)MessageId ||
+            !reader.TryReadUInt128(out var cookie) ||
             !reader.TryReadStringList(out var keyExchangeAlgorithms) ||
             !reader.TryReadStringList(out var serverHostKeyAlgorithms) ||
             !reader.TryReadStringList(out var encryptionAlgorithmsClientToServer) ||
@@ -61,12 +60,11 @@ internal struct KeyExchangeInitPacket : IPacketPayload<KeyExchangeInitPacket>
             !reader.TryReadBoolean(out var firstKexPacketFollows) ||
             !reader.TryReadUInt32(out var reserved))
         {
-            packet = default;
-            consumed = buffer.Length - reader.RemainingBytes;
+            payload = default;
             return false;
         }
 
-        packet = new KeyExchangeInitPacket
+        payload = new KeyExchangeInitPacket
         {
             Cookie = cookie,
             KeyExchangeAlgorithms = keyExchangeAlgorithms,
@@ -83,34 +81,24 @@ internal struct KeyExchangeInitPacket : IPacketPayload<KeyExchangeInitPacket>
             Reserved = reserved
         };
 
-        consumed = buffer.Length - reader.RemainingBytes;
         return true;
     }
 
-    public static int Write(Span<byte> destination, in KeyExchangeInitPacket packet)
+    public static void Write(ref SpanWriter writer, in KeyExchangeInitPacket payload)
     {
-        if (destination.Length < packet.WireLength)
-        {
-            throw new ArgumentException("Destination buffer is too small.", nameof(destination));
-        }
-
-        var writer = new SpanWriter(destination);
-
         writer.WriteByte((byte)MessageId.SSH_MSG_KEXINIT);
-        writer.WriteUInt128(packet.Cookie);
-        writer.WriteStringList(packet.KeyExchangeAlgorithms);
-        writer.WriteStringList(packet.ServerHostKeyAlgorithms);
-        writer.WriteStringList(packet.EncryptionAlgorithmsClientToServer);
-        writer.WriteStringList(packet.EncryptionAlgorithmsServerToClient);
-        writer.WriteStringList(packet.MacAlgorithmsClientToServer);
-        writer.WriteStringList(packet.MacAlgorithmsServerToClient);
-        writer.WriteStringList(packet.CompressionAlgorithmsClientToServer);
-        writer.WriteStringList(packet.CompressionAlgorithmsServerToClient);
-        writer.WriteStringList(packet.LanguagesClientToServer);
-        writer.WriteStringList(packet.LanguagesServerToClient);
-        writer.WriteBoolean(packet.FirstKexPacketFollows);
-        writer.WriteUInt32(packet.Reserved);
-
-        return destination.Length - writer.RemainingBytes;
+        writer.WriteUInt128(payload.Cookie);
+        writer.WriteStringList(payload.KeyExchangeAlgorithms);
+        writer.WriteStringList(payload.ServerHostKeyAlgorithms);
+        writer.WriteStringList(payload.EncryptionAlgorithmsClientToServer);
+        writer.WriteStringList(payload.EncryptionAlgorithmsServerToClient);
+        writer.WriteStringList(payload.MacAlgorithmsClientToServer);
+        writer.WriteStringList(payload.MacAlgorithmsServerToClient);
+        writer.WriteStringList(payload.CompressionAlgorithmsClientToServer);
+        writer.WriteStringList(payload.CompressionAlgorithmsServerToClient);
+        writer.WriteStringList(payload.LanguagesClientToServer);
+        writer.WriteStringList(payload.LanguagesServerToClient);
+        writer.WriteBoolean(payload.FirstKexPacketFollows);
+        writer.WriteUInt32(payload.Reserved);
     }
 }

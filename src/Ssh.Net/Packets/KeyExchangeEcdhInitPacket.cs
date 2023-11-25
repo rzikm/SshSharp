@@ -19,14 +19,12 @@ internal struct KeyExchangeEcdhInitPacket : IPacketPayload<KeyExchangeEcdhInitPa
         return length;
     }
 
-    public static bool TryRead(ReadOnlySpan<byte> buffer, out KeyExchangeEcdhInitPacket payload, out int consumed)
+    public static bool TryRead(ref SpanReader reader, out KeyExchangeEcdhInitPacket payload)
     {
-        var reader = new SpanReader(buffer.Slice(1)); // skip message id
-
-        if (!reader.TryReadStringAsSpan(out var clientEphemeralPublicKey))
+        if (!reader.TryReadByte(out var messageId) || messageId != (byte)MessageId ||
+            !reader.TryReadStringAsSpan(out var clientEphemeralPublicKey))
         {
             payload = default;
-            consumed = buffer.Length - reader.RemainingBytes;
             return false;
         }
 
@@ -34,21 +32,12 @@ internal struct KeyExchangeEcdhInitPacket : IPacketPayload<KeyExchangeEcdhInitPa
         {
             ClientEphemeralPublicKey = clientEphemeralPublicKey.ToArray()
         };
-        consumed = buffer.Length - reader.RemainingBytes;
         return true;
     }
 
-    public static int Write(Span<byte> destination, in KeyExchangeEcdhInitPacket packet)
+    public static void Write(ref SpanWriter writer, in KeyExchangeEcdhInitPacket payload)
     {
-        if (destination.Length < packet.WireLength)
-        {
-            throw new ArgumentException("Destination buffer is too small.", nameof(destination));
-        }
-
-        var writer = new SpanWriter(destination);
         writer.WriteByte((byte)MessageId.SSH_MSG_KEXDH_INIT);
-        writer.WriteString(packet.ClientEphemeralPublicKey);
-
-        return destination.Length - writer.RemainingBytes;
+        writer.WriteString(payload.ClientEphemeralPublicKey);
     }
 }

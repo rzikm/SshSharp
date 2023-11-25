@@ -21,14 +21,12 @@ internal struct UserauthBannerPacket : IPacketPayload<UserauthBannerPacket>
         return length;
     }
 
-    public static bool TryRead(ReadOnlySpan<byte> buffer, out UserauthBannerPacket payload, out int consumed)
+    public static bool TryRead(ref SpanReader reader, out UserauthBannerPacket payload)
     {
-        var reader = new SpanReader(buffer.Slice(1)); // skip message id
-
-        if (!reader.TryReadString(out var message) ||
+        if (!reader.TryReadByte(out var messageId) || messageId != (byte)MessageId ||
+            !reader.TryReadString(out var message) ||
             !reader.TryReadString(out var language))
         {
-            consumed = buffer.Length - reader.RemainingBytes;
             payload = default;
             return false;
         }
@@ -39,23 +37,13 @@ internal struct UserauthBannerPacket : IPacketPayload<UserauthBannerPacket>
             Language = language
         };
 
-        consumed = buffer.Length - reader.RemainingBytes;
         return true;
     }
 
-    public static int Write(Span<byte> destination, in UserauthBannerPacket packet)
+    public static void Write(ref SpanWriter writer, in UserauthBannerPacket payload)
     {
-        if (destination.Length < packet.WireLength)
-        {
-            throw new ArgumentException("Destination buffer is too small.", nameof(destination));
-        }
-
-        var writer = new SpanWriter(destination);
-
         writer.WriteByte((byte)MessageId);
-        writer.WriteString(packet.Message);
-        writer.WriteString(packet.Language);
-
-        return destination.Length - writer.RemainingBytes;
+        writer.WriteString(payload.Message);
+        writer.WriteString(payload.Language);
     }
 }
