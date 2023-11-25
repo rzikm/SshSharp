@@ -8,8 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-
-    <Compile Include="..\..\src\Ssh.Net\**\*.cs" Exclude="..\..\src\Ssh.Net\obj\**\*.cs"/>
+    <Compile Include="..\..\src\SshSharp\**\*.cs" Exclude="..\..\src\SshSharp\obj\**\*.cs" />
   </ItemGroup>
 
 </Project>

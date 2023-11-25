@@ -1,7 +1,7 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Ssh.Net\Ssh.Net.csproj" />
+    <ProjectReference Include="..\..\src\SshSharp\SshSharp.csproj" />
   </ItemGroup>
 
   <PropertyGroup>
