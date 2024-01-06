@@ -8,7 +8,12 @@
   </PropertyGroup>
 
   <ItemGroup>
+
     <Compile Include="..\..\src\SshSharp\**\*.cs" Exclude="..\..\src\SshSharp\obj\**\*.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\..\sshnet-other\src\Renci.SshNet\Renci.SshNet.csproj" />
   </ItemGroup>
 
 </Project>
