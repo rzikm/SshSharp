@@ -1,9 +1,8 @@
 using System.Buffers;
-using System.Buffers.Text;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
-using System.Security.Cryptography;
-using System.Security.Cryptography.X509Certificates;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using SshSharp.Crypto;
 using SshSharp.Packets;
@@ -15,23 +14,38 @@ internal class SshChannel
 {
     private readonly SshConnection _connection;
 
-    private readonly int _channelId;
+    private readonly TaskCompletionSource _opened = new();
 
-    public SshChannel(SshConnection connection, int channelId)
+    private ChannelOpenConfirmationPacket _confirmationPacket;
+
+    public SshChannel(SshConnection connection)
     {
         _connection = connection;
-        _channelId = channelId;
+    }
+
+    internal void SetOpened(ChannelOpenConfirmationPacket confirmationPacket)
+    {
+        Console.WriteLine($"Confirmation: {confirmationPacket.RecipientChannel}, {confirmationPacket.SenderChannel}, {confirmationPacket.InitialWindowSize}, {confirmationPacket.MaximumPacketSize}");
+        _confirmationPacket = confirmationPacket;
+        _opened.TrySetResult();
     }
 
     public Task ExecuteCommandAsync(string command)
     {
         return Task.CompletedTask;
     }
+
+    internal Task WaitToOpen()
+    {
+        return _opened.Task;
+    }
 }
 
 internal class SshConnection : IDisposable
 {
-    // private bool _disposed;
+    private bool _disposed;
+
+    private Exception? _sentinel;
 
     public string ServerVersion { get; private set; } = null!;
 
@@ -42,6 +56,7 @@ internal class SshConnection : IDisposable
     private readonly PacketReaderWriter _readerWriter;
 
     private byte[] _sessionId = null!;
+    private byte[] _exchangeHash = null!;
 
     private SshConnectionParameters _parameters = null!;
 
@@ -57,7 +72,21 @@ internal class SshConnection : IDisposable
 
     private MacAlgorithm _serverToClientMac = new NullMacAlgorithm();
 
-    private readonly Dictionary<int, SshChannel> _channels = new();
+    private int _channelCount;
+    private readonly ConcurrentDictionary<int, SshChannel> _channels = new();
+
+    private object SendLock => _clientToServerMac;
+
+    private Task _receiveLoopTask = null!;
+
+    private KeyExchangeInitPacket _serverKexPacket;
+
+    private KeyExchangeInitPacket _clientKexPacket;
+
+    private readonly TaskCompletionSource _handshakeCompletionSource = new();
+    private TaskCompletionSource<(bool, UserauthPublicKeyOkPacket)> _userAuthPublicKey = new();
+    private readonly TaskCompletionSource _serviceAccept = new();
+    private readonly TaskCompletionSource _userAuthSuccess = new();
 
     public SshConnection(Socket socket)
     {
@@ -84,25 +113,28 @@ internal class SshConnection : IDisposable
 
         await _stream.WriteAsync(Constants.VersionBytesCrLf).ConfigureAwait(false);
 
-        await DoKeyExchangeAsync().ConfigureAwait(false);
+        await KickOffKeyExchangeAsync().ConfigureAwait(false);
+        _receiveLoopTask = Task.Run(ReceiveLoop);
+
+        await _handshakeCompletionSource.Task.ConfigureAwait(false);
         await AuthenticateUser().ConfigureAwait(false);
     }
 
     public async Task ExecuteCommandAsync(string command)
     {
-        var channel = new SshChannel(this, 0);
+        var channel = new SshChannel(this);
 
-        await SendPacketAsync(new SessionOpenPacket
+        var packet = new SessionOpenPacket
         {
             InitialWindowSize = 0x100000,
             MaximumPacketSize = 0x4000,
-            SenderChannel = 0,
-        }).ConfigureAwait(false);
+            SenderChannel = Interlocked.Increment(ref _channelCount),
+        };
 
-        await ExpectMessageAsync<GlobalRequestPacket>().ConfigureAwait(false);
+        _channels.TryAdd(packet.SenderChannel, channel);
 
-        var confirmationPacket = await ExpectMessageAsync<ChannelOpenConfirmationPacket>().ConfigureAwait(false);
-        Console.WriteLine($"Confirmation: {confirmationPacket.RecipientChannel}, {confirmationPacket.SenderChannel}, {confirmationPacket.InitialWindowSize}, {confirmationPacket.MaximumPacketSize}");
+        await SendPacketAsync(packet).ConfigureAwait(false);
+        await channel.WaitToOpen().ConfigureAwait(false);
     }
 
     private async Task AuthenticateUser()
@@ -111,7 +143,8 @@ internal class SshConnection : IDisposable
         {
             ServiceName = "ssh-userauth"
         }).ConfigureAwait(false);
-        await ExpectMessageAsync(MessageId.SSH_MSG_SERVICE_ACCEPT).ConfigureAwait(false);
+
+        await _serviceAccept.Task.ConfigureAwait(false);
 
         SshPublicKey publicKey = SshPublicKey.FromPrivateKeyFile(@"C:\Users\radekzikmund\.ssh\id_rsa");
 
@@ -136,37 +169,23 @@ internal class SshConnection : IDisposable
             };
 
             await SendPacketAsync(header, publicKeyData).ConfigureAwait(false);
-
-            bool CheckForReplyPacket(IPublicKeyAuthAlgorithm authAlg, out UserauthPublicKeyOkPacket packet)
+            var (success, packet) = await _userAuthPublicKey.Task.ConfigureAwait(false);
+            if (!success)
             {
-                var replyPacket = ReadPacket();
-                if (replyPacket.MessageId == MessageId.SSH_MSG_USERAUTH_FAILURE)
-                {
-                    Console.WriteLine($"Rejected: {authAlg.AlgorithmName}");
-
-                    var failurePacket = replyPacket.ParsePayload<UserauthFailurePacket>();
-                    packet = default;
-                    return false;
-                }
-
-                packet = replyPacket.ParsePayload<UserauthPublicKeyOkPacket>();
-                if (packet.AlgorithmName != publicKeyData.AlgorithmName)
-                {
-                    throw new Exception($"Server accepted different algorithm: {packet.AlgorithmName}.");
-                }
-                if (!packet.PublicKey.AsSpan().SequenceEqual(publicKeyData.PublicKey))
-                {
-                    throw new Exception($"Server accepted different public key.");
-                }
-                Console.WriteLine("Public key accepted, retrying with signature.");
-                return true;
-            }
-
-            await _readerWriter.WaitForPacketAsync(_serverToClientEncryption, _serverToClientMac).ConfigureAwait(false);
-            if (!CheckForReplyPacket(authAlg, out var packet))
-            {
+                Console.WriteLine($"Rejected: {authAlg.AlgorithmName}");
+                _userAuthPublicKey = new();
                 continue;
             }
+
+            if (packet.AlgorithmName != publicKeyData.AlgorithmName)
+            {
+                throw new Exception($"Server accepted different algorithm: {packet.AlgorithmName}.");
+            }
+            if (!packet.PublicKey.AsSpan().SequenceEqual(publicKeyData.PublicKey))
+            {
+                throw new Exception($"Server accepted different public key.");
+            }
+            Console.WriteLine("Public key accepted, retrying with signature.");
 
             // temporarily put empty array in signature to force TRUE in the "has signature" field for signature computation
             publicKeyData.Signature = Array.Empty<byte>();
@@ -183,7 +202,7 @@ internal class SshConnection : IDisposable
             publicKeyData.Signature = WriteSignature(signatureSrc, _sessionId, header, publicKeyData, authAlg);
 
             await SendPacketAsync(header, publicKeyData).ConfigureAwait(false);
-            await ExpectMessageAsync(MessageId.SSH_MSG_USERAUTH_SUCCESS).ConfigureAwait(false);
+            await _userAuthSuccess.Task.ConfigureAwait(false);
             authenticated = true;
             break;
         }
@@ -196,11 +215,9 @@ internal class SshConnection : IDisposable
         }
     }
 
-    private async Task DoKeyExchangeAsync()
+    private ValueTask KickOffKeyExchangeAsync()
     {
-        var serverKexPacket = await ExpectMessageAsync<KeyExchangeInitPacket>().ConfigureAwait(false);
-
-        var clientKexPacket = new KeyExchangeInitPacket()
+        _clientKexPacket = new KeyExchangeInitPacket()
         {
             Cookie = (UInt128)Random.Shared.NextInt64() + ((UInt128)Random.Shared.NextInt64()) << 64,
             KeyExchangeAlgorithms = new List<string> { "curve25519-sha256" },
@@ -217,10 +234,22 @@ internal class SshConnection : IDisposable
             Reserved = 0,
         };
 
-        _parameters = SshConnectionParameters.FromKeyExchangeInitPacket(serverKexPacket, clientKexPacket);
-        _keyExchange = KeyExchange.Create(_parameters.KeyExchangeAlgorithm);
+        return SendPacketAsync(_clientKexPacket);
+    }
 
-        await SendPacketAsync(clientKexPacket).ConfigureAwait(false);
+    private async Task ReceiveLoop()
+    {
+        do
+        {
+            await _readerWriter.WaitForPacketAsync(_serverToClientEncryption, _serverToClientMac).ConfigureAwait(false);
+        } while (await ProcessNextPacket());
+    }
+
+    private async ValueTask<bool> OnKeyExchangeInitPacket(KeyExchangeInitPacket serverKexPacket)
+    {
+        _serverKexPacket = serverKexPacket;
+        _parameters = SshConnectionParameters.FromKeyExchangeInitPacket(serverKexPacket, _clientKexPacket);
+        _keyExchange = KeyExchange.Create(_parameters.KeyExchangeAlgorithm);
 
         // send initial key exchange packet
         await SendPacketAsync(new KeyExchangeEcdhInitPacket
@@ -228,55 +257,134 @@ internal class SshConnection : IDisposable
             ClientEphemeralPublicKey = _keyExchange.EphemeralPublicKey,
         }).ConfigureAwait(false);
 
-        var serverKexReply = await ExpectMessageAsync<KeyExchangeEcdhReplyPacket>().ConfigureAwait(false);
-        // DebugHelpers.DumpKeyExchangeReplyPacket(serverKexReply);
+        return true;
+    }
 
-        _keyExchange.DeriveSharedSecret(serverKexReply.ServerEphemeralPublicKey);
-        var exchangeHash = _keyExchange.GetExchangeHash(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, clientKexPacket, serverKexPacket, serverKexReply);
+    private async ValueTask<bool> OnKeyExchangeEcdhReplyPacket(KeyExchangeEcdhReplyPacket kexReplyPacket)
+    {
+        _keyExchange.DeriveSharedSecret(kexReplyPacket.ServerEphemeralPublicKey);
+        var exchangeHash = _keyExchange.GetExchangeHash(Encoding.UTF8.GetBytes(ServerVersion), Constants.VersionBytes, _clientKexPacket, _serverKexPacket, kexReplyPacket);
 
         _sessionId ??= exchangeHash;
+        _exchangeHash = exchangeHash;
 
-        _hostKey = HostKeyAlgorithm.CreateFromWireData(serverKexReply.HostKey);
+        _hostKey = HostKeyAlgorithm.CreateFromWireData(kexReplyPacket.HostKey);
 
-        if (!_hostKey.VerifyExchangeHashSignature(exchangeHash, serverKexReply.ExchangeHashSignature))
+        if (!_hostKey.VerifyExchangeHashSignature(exchangeHash, kexReplyPacket.ExchangeHashSignature))
         {
             throw new Exception("Failed to verify exchange signature.");
         }
 
         await SendPacketAsync(MessageId.SSH_MSG_NEWKEYS).ConfigureAwait(false);
-        await ExpectMessageAsync(MessageId.SSH_MSG_NEWKEYS).ConfigureAwait(false);
-        DeriveEncryptionKeys(exchangeHash);
+        DeriveClientToServerEncryptionKeys();
+
+        return true;
     }
 
-    private void DeriveEncryptionKeys(byte[] exchangeHash)
+    private ValueTask<bool> ProcessNextPacket()
     {
-        //   K = shared secret, H = exchange hash
-        //
-        //    o  Initial IV client to server: HASH(K || H || "A" || session_id)
-        //       (Here K is encoded as mpint and "A" as byte and session_id as raw
-        //       data.  "A" means the single character A, ASCII 65).
-        // 
-        //    o  Initial IV server to client: HASH(K || H || "B" || session_id)
-        // 
-        //    o  Encryption key client to server: HASH(K || H || "C" || session_id)
-        // 
-        //    o  Encryption key server to client: HASH(K || H || "D" || session_id)
-        // 
-        //    o  Integrity key client to server: HASH(K || H || "E" || session_id)
-        // 
-        //    o  Integrity key server to client: HASH(K || H || "F" || session_id)
+        var packet = _readerWriter.ReadPacket(_serverToClientEncryption, _serverToClientMac);
+        switch (packet.MessageId)
+        {
+            case MessageId.SSH_MSG_KEXINIT:
+                if (packet.TryParsePayload(out KeyExchangeInitPacket kexInitPacket, out _))
+                    return OnKeyExchangeInitPacket(kexInitPacket);
+                break;
 
-        byte[] HashHelper(char c, int len) => KeyGenerationHelpers.DeriveSessionKey(_keyExchange.SharedSecret, exchangeHash, c, _sessionId, _keyExchange, len);
+            case MessageId.SSH_MSG_KEXDH_REPLY:
+                if (packet.TryParsePayload(out KeyExchangeEcdhReplyPacket kexReplyPacket, out _))
+                    return OnKeyExchangeEcdhReplyPacket(kexReplyPacket);
+                break;
+
+            case MessageId.SSH_MSG_NEWKEYS:
+                DeriveServerToClientEncryptionKeys();
+                _handshakeCompletionSource.TrySetResult();
+                return ValueTask.FromResult(true);
+
+            case MessageId.SSH_MSG_SERVICE_ACCEPT:
+                _serviceAccept.TrySetResult();
+                return ValueTask.FromResult(true);
+
+            case MessageId.SSH_MSG_USERAUTH_FAILURE:
+                _userAuthPublicKey.TrySetResult((false, default));
+                return ValueTask.FromResult(true);
+
+            case MessageId.SSH_MSG_USERAUTH_PK_OK:
+                if (packet.TryParsePayload(out UserauthPublicKeyOkPacket userAuthPublicKeyOkPacket, out _))
+                {
+                    _userAuthPublicKey.TrySetResult((true, userAuthPublicKeyOkPacket));
+                    return ValueTask.FromResult(true);
+                }
+                break;
+
+            case MessageId.SSH_MSG_USERAUTH_SUCCESS:
+                _userAuthSuccess.TrySetResult();
+                return ValueTask.FromResult(true);
+
+            case MessageId.SSH_MSG_GLOBAL_REQUEST:
+                if (packet.TryParsePayload(out GlobalRequestPacket globalRequestPacket, out _))
+                    Console.WriteLine($"Global request: {globalRequestPacket.RequestName}, want reply: {globalRequestPacket.WantReply}");
+                return ValueTask.FromResult(true);
+
+            case MessageId.SSH_MSG_CHANNEL_OPEN_CONFIRMATION:
+                if (packet.TryParsePayload(out ChannelOpenConfirmationPacket payload, out _))
+                {
+                    if (_channels.TryGetValue(payload.RecipientChannel, out var channel))
+                    {
+                        channel.SetOpened(payload);
+                    }
+                }
+                return ValueTask.FromResult(true);
+
+            default:
+                _sentinel = ExceptionDispatchInfo.SetCurrentStackTrace(new Exception($"Unexpected packet: {packet.MessageId}"));
+                break;
+        }
+
+        return ValueTask.FromResult(true);
+    }
+
+    //
+    //   K = shared secret, H = exchange hash
+    //
+    //    o  Initial IV client to server: HASH(K || H || "A" || session_id)
+    //       (Here K is encoded as mpint and "A" as byte and session_id as raw
+    //       data.  "A" means the single character A, ASCII 65).
+    // 
+    //    o  Initial IV server to client: HASH(K || H || "B" || session_id)
+    // 
+    //    o  Encryption key client to server: HASH(K || H || "C" || session_id)
+    // 
+    //    o  Encryption key server to client: HASH(K || H || "D" || session_id)
+    // 
+    //    o  Integrity key client to server: HASH(K || H || "E" || session_id)
+    // 
+    //    o  Integrity key server to client: HASH(K || H || "F" || session_id)
+    //
+
+    private void DeriveClientToServerEncryptionKeys()
+    {
+        System.Console.WriteLine("Deriving client to server encryption keys.");
+
+        byte[] HashHelper(char c, int len) => KeyGenerationHelpers.DeriveSessionKey(_keyExchange.SharedSecret, _exchangeHash, c, _sessionId, _keyExchange, len);
 
         _clientToServerEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmClientToServer,
             l => HashHelper('A', l),
             l => HashHelper('C', l));
 
+        _clientToServerMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, l => HashHelper('E', l));
+    }
+
+    private void DeriveServerToClientEncryptionKeys()
+    {
+        System.Console.WriteLine("Deriving server to client encryption keys.");
+
+        byte[] HashHelper(char c, int len) => KeyGenerationHelpers.DeriveSessionKey(_keyExchange.SharedSecret, _exchangeHash, c, _sessionId, _keyExchange, len);
+
         _serverToClientEncryption = EncryptionAlgorithm.Create(_parameters.EncryptionAlgorithmServerToClient,
             l => HashHelper('B', l),
             l => HashHelper('D', l));
 
-        _clientToServerMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, l => HashHelper('E', l));
         _serverToClientMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, l => HashHelper('F', l));
     }
 
@@ -333,17 +441,40 @@ internal class SshConnection : IDisposable
         return Encoding.UTF8.GetString((await _readerWriter.ReadVersionStringAsync().ConfigureAwait(false)).Span);
     }
 
-    private ValueTask SendPacketAsync<TPacket>(in TPacket packet) where TPacket : IPacketPayload<TPacket> =>
-        _readerWriter.SendPacketAsync(packet, _clientToServerEncryption, _clientToServerMac);
+    //
+    // All send operations need to be serialized because of the encryption and MAC algorithms.
+    //
+    private ValueTask SendPacketAsync<TPacket>(in TPacket packet) where TPacket : IPacketPayload<TPacket>
+    {
+        lock (SendLock)
+        {
+            return _readerWriter.SendPacketAsync(packet, _clientToServerEncryption, _clientToServerMac);
+        }
+    }
 
-    private ValueTask SendPacketAsync<TAuth>(in UserAuthRequestHeader header, in TAuth auth) where TAuth : IUserauthMethod<TAuth> =>
-        _readerWriter.SendPacketAsync(header, auth, _clientToServerEncryption, _clientToServerMac);
+    private ValueTask SendPacketAsync<TAuth>(in UserAuthRequestHeader header, in TAuth auth) where TAuth : IUserauthMethod<TAuth>
+    {
+        lock (SendLock)
+        {
+            return _readerWriter.SendPacketAsync(header, auth, _clientToServerEncryption, _clientToServerMac);
+        }
+    }
 
-    private ValueTask SendPacketAsync(MessageId messageId) =>
-        _readerWriter.SendPacketAsync(messageId, _clientToServerEncryption, _clientToServerMac);
+    private ValueTask SendPacketAsync(MessageId messageId)
+    {
+        lock (SendLock)
+        {
+            return _readerWriter.SendPacketAsync(messageId, _clientToServerEncryption, _clientToServerMac);
+        }
+    }
 
-    private ValueTask SendPacketAsync(MessageId messageId, string param) =>
-        _readerWriter.SendPacketAsync(messageId, param, _clientToServerEncryption, _clientToServerMac);
+    private ValueTask SendPacketAsync(MessageId messageId, string param)
+    {
+        lock (SendLock)
+        {
+            return _readerWriter.SendPacketAsync(messageId, param, _clientToServerEncryption, _clientToServerMac);
+        }
+    }
 
     private SshPacket ReadPacket() => _readerWriter.ReadPacket(_serverToClientEncryption, _serverToClientMac);
 
@@ -351,6 +482,7 @@ internal class SshConnection : IDisposable
     {
         _socket.Dispose();
         _readerWriter.Dispose();
+        _disposed = true;
     }
 
 }
