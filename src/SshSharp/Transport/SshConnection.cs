@@ -10,6 +10,34 @@ using SshSharp.Utils;
 
 namespace SshSharp.Transport;
 
+internal class SshChannel
+{
+    private readonly SshConnection _connection;
+
+    private readonly int _channelId;
+
+    public SshChannel(SshConnection connection, int channelId)
+    {
+        _connection = connection;
+        _channelId = channelId;
+    }
+
+    public void ExecuteCommand(string command)
+    {
+        _connection.SendPacket(new SessionOpenPacket
+        {
+            InitialWindowSize = 0x100000,
+            MaximumPacketSize = 0x4000,
+            SenderChannel = _channelId,
+        });
+
+        _connection.ExpectMessage<GlobalRequestPacket>();
+
+        var confirmationPacket = _connection.ExpectMessage<ChannelOpenConfirmationPacket>();
+        Console.WriteLine($"Confirmation: {confirmationPacket.RecipientChannel}, {confirmationPacket.SenderChannel}, {confirmationPacket.InitialWindowSize}, {confirmationPacket.MaximumPacketSize}");
+    }
+}
+
 internal class SshConnection : IDisposable
 {
     // private bool _disposed;
@@ -38,6 +66,8 @@ internal class SshConnection : IDisposable
 
     private MacAlgorithm _serverToClientMac = new NullMacAlgorithm();
 
+    private readonly Dictionary<int, SshChannel> _channels = new();
+
     public SshConnection(Socket socket)
     {
         _socket = socket;
@@ -65,6 +95,24 @@ internal class SshConnection : IDisposable
 
         DoKeyExchange();
         AuthenticateUser();
+    }
+
+    public void ExecuteCommand(string command)
+    {
+        var channel = new SshChannel(this, 0);
+
+
+        SendPacket(new SessionOpenPacket
+        {
+            InitialWindowSize = 0x100000,
+            MaximumPacketSize = 0x4000,
+            SenderChannel = 0,
+        });
+
+        ExpectMessage<GlobalRequestPacket>();
+
+        var confirmationPacket = ExpectMessage<ChannelOpenConfirmationPacket>();
+        Console.WriteLine($"Confirmation: {confirmationPacket.RecipientChannel}, {confirmationPacket.SenderChannel}, {confirmationPacket.InitialWindowSize}, {confirmationPacket.MaximumPacketSize}");
     }
 
     private void AuthenticateUser()

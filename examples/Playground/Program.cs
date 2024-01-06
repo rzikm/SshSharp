@@ -20,6 +20,8 @@ var endpoint = new DnsEndPoint("localhost", 22);
 
 var connection = SshConnection.Connect(endpoint);
 
+connection.ExecuteCommand("calc.exe");
+
 // var connectionInfo = new ConnectionInfo(endpoint.Host, "EUROPE\\radekzikmund", new PrivateKeyAuthenticationMethod("EUROPE\\radekzikmund", new PrivateKeyFile("C:/Users/radekzikmund/.ssh/id_rsa")));
 
 // using (var client = new SshClient(connectionInfo))
