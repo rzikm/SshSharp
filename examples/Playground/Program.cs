@@ -18,9 +18,9 @@ using Renci.SshNet;
 // var endpoint = new DnsEndPoint("radekzikmund-desktop", 22);
 var endpoint = new DnsEndPoint("localhost", 22);
 
-var connection = SshConnection.Connect(endpoint);
+var connection = await SshConnection.ConnectAsync(endpoint).ConfigureAwait(false);
 
-connection.ExecuteCommand("calc.exe");
+await connection.ExecuteCommandAsync("calc.exe").ConfigureAwait(false);
 
 // var connectionInfo = new ConnectionInfo(endpoint.Host, "EUROPE\\radekzikmund", new PrivateKeyAuthenticationMethod("EUROPE\\radekzikmund", new PrivateKeyFile("C:/Users/radekzikmund/.ssh/id_rsa")));
 

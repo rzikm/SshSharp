@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.Sockets;
 using SshSharp.Crypto;
 using SshSharp.Packets;
@@ -21,12 +22,8 @@ internal class PacketReaderWriter : IDisposable
         _stream = stream;
     }
 
-    public SshPacket ReadPacket() => ReadPacket(NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
-
-    public SshPacket ReadPacket(EncryptionAlgorithm encryption, MacAlgorithm mac)
+    public async ValueTask WaitForPacketAsync(EncryptionAlgorithm encryption, MacAlgorithm mac, CancellationToken cancellationToken = default)
     {
-        SshPacket packet;
-
         if (_lastConsumed > 0)
         {
             // copy leftover to beginning
@@ -35,11 +32,9 @@ internal class PacketReaderWriter : IDisposable
             _lastConsumed = 0;
         }
 
-        int consumed;
-
         while (_bytes < encryption.BlockSize)
         {
-            _bytes += _stream.Read(_recvBuffer.AsSpan(_bytes));
+            _bytes += await _stream.ReadAsync(_recvBuffer.AsMemory(_bytes)).ConfigureAwait(false);
         }
 
         // decrypt the first block to get the length
@@ -48,13 +43,23 @@ internal class PacketReaderWriter : IDisposable
 
         while (_bytes < totalLength)
         {
-            _bytes += _stream.Read(_recvBuffer.AsSpan(_bytes));
+            _bytes += await _stream.ReadAsync(_recvBuffer.AsMemory(_bytes)).ConfigureAwait(false);
         }
 
         // decrypt the rest
         encryption.Decrypt(_recvBuffer.AsSpan(encryption.BlockSize, totalLength - encryption.BlockSize - mac.MacSize));
+    }
 
-        if (!SshPacket.TryRead(_recvBuffer.AsSpan(0, _bytes), mac.MacSize, out packet, out consumed))
+    public SshPacket ReadPacket() => ReadPacket(NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
+
+    public SshPacket ReadPacket(EncryptionAlgorithm encryption, MacAlgorithm mac)
+    {
+        SshPacket packet;
+
+        int totalLength = SshPacket.GetExpectedLength(_recvBuffer, mac.MacSize);
+        Debug.Assert(totalLength <= _bytes && _bytes > 0, "Packet is not fully received.");
+
+        if (!SshPacket.TryRead(_recvBuffer.AsSpan(0, _bytes), mac.MacSize, out packet, out int consumed))
         {
             throw new Exception("Corrupted packet.");
         }
@@ -68,12 +73,12 @@ internal class PacketReaderWriter : IDisposable
         return packet;
     }
 
-    public ReadOnlySpan<byte> ReadVersionString()
+    public async Task<ReadOnlyMemory<byte>> ReadVersionStringAsync()
     {
         int index;
         do
         {
-            _bytes += _stream.Read(_recvBuffer.AsSpan(_bytes));
+            _bytes += await _stream.ReadAsync(_recvBuffer.AsMemory(_bytes)).ConfigureAwait(false);
             index = _recvBuffer.AsSpan(0, _bytes).IndexOf("\r\n"u8);
         } while (index == -1 && _bytes < 256);
 
@@ -83,25 +88,24 @@ internal class PacketReaderWriter : IDisposable
         }
 
         _lastConsumed = index + 2;
-        return _recvBuffer.AsSpan(0, index);
+        return _recvBuffer.AsMemory(0, index);
     }
 
-    public void SendPacket<TAuth>(in UserAuthRequestHeader header, in TAuth auth, EncryptionAlgorithm encryption, MacAlgorithm mac) where TAuth : IUserauthMethod<TAuth>
+    public ValueTask SendPacketAsync<TAuth>(in UserAuthRequestHeader header, in TAuth auth, EncryptionAlgorithm encryption, MacAlgorithm mac) where TAuth : IUserauthMethod<TAuth>
     {
         int written = PacketHelpers.WritePayload(_sendBuffer, header, auth, encryption, mac);
-        _stream.Write(_sendBuffer.AsSpan(0, written));
+        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
     }
 
-    public void SendPacket<T>(in T packet, EncryptionAlgorithm encryption, MacAlgorithm mac) where T : IPacketPayload<T>
+    public ValueTask SendPacketAsync<T>(in T packet, EncryptionAlgorithm encryption, MacAlgorithm mac) where T : IPacketPayload<T>
     {
         int written = PacketHelpers.WritePayload(_sendBuffer, packet, encryption, mac);
-        // System.Console.WriteLine($"Sending {written} bytes: {BitConverter.ToString(_sendBuffer.AsSpan(0, written).ToArray())}");
-        _stream.Write(_sendBuffer.AsSpan(0, written));
+        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
     }
 
-    public void SendPacket(MessageId messageId, string param) => SendPacket(messageId, param, NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
+    public ValueTask SendPacketAsync(MessageId messageId, string param) => SendPacketAsync(messageId, param, NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
 
-    public void SendPacket(MessageId messageId, string param, EncryptionAlgorithm encryption, MacAlgorithm mac)
+    public ValueTask SendPacketAsync(MessageId messageId, string param, EncryptionAlgorithm encryption, MacAlgorithm mac)
     {
         Span<byte> buffer = stackalloc byte[DataHelper.GetStringWireLength(param) + 1];
         SpanWriter writer = new(buffer);
@@ -109,16 +113,16 @@ internal class PacketReaderWriter : IDisposable
         writer.WriteString(param);
 
         int written = PacketHelpers.WritePayload(_sendBuffer, buffer, encryption, mac);
-        _stream.Write(_sendBuffer.AsSpan(0, written));
+        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
     }
 
-    public void SendPacket(MessageId messageId) => SendPacket(messageId, NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
+    public ValueTask SendPacketAsync(MessageId messageId) => SendPacketAsync(messageId, NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
 
-    public void SendPacket(MessageId messageId, EncryptionAlgorithm encryption, MacAlgorithm mac)
+    public ValueTask SendPacketAsync(MessageId messageId, EncryptionAlgorithm encryption, MacAlgorithm mac)
     {
         Span<byte> buffer = [(byte)messageId];
         int written = PacketHelpers.WritePayload(_sendBuffer, buffer, encryption, mac);
-        _stream.Write(_sendBuffer.AsSpan(0, written));
+        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
     }
 
     protected virtual void Dispose(bool disposing)
