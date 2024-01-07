@@ -1,37 +1,10 @@
+using System.Collections.Concurrent;
 using System.IO.Pipelines;
 using System.Threading.Channels;
 using SshSharp.Packets;
 using SshSharp.Utils;
 
 namespace SshSharp.Transport;
-
-public class Limiter
-{
-    private readonly int _limit;
-
-    private int _count;
-
-    public Limiter(int limit)
-    {
-        _limit = limit;
-    }
-
-    public bool TryAcquire()
-    {
-        if (_count < _limit)
-        {
-            _count++;
-            return true;
-        }
-
-        return false;
-    }
-
-    public void Release()
-    {
-        _count--;
-    }
-}
 
 public class SshChannel
 {
@@ -42,6 +15,7 @@ public class SshChannel
     private ChannelOpenConfirmationPacket _confirmationPacket;
 
     // private int _receiveWindowSize;
+    private int RemoteChannel => _confirmationPacket.SenderChannel;
 
     private int _sendWindowSize;
 
@@ -51,43 +25,12 @@ public class SshChannel
 
     private Task _sendTask;
 
+    private ConcurrentQueue<string> _channelRequests = new();
+
     public SshChannel(SshConnection connection)
     {
         _connection = connection;
         _sendTask = Task.Run(() => SendTask());
-    }
-
-    private async Task SendTask()
-    {
-        var reader = _sendPipe.Reader;
-        while (true)
-        {
-            var result = await reader.ReadAsync().ConfigureAwait(false);
-            var maxSend = Math.Min(_confirmationPacket.MaximumPacketSize, _sendWindowSize);
-
-            foreach (var buffer in result.Buffer)
-            {
-                var len = Math.Min(buffer.Length, maxSend);
-
-                Log.Info($"Sending {len} bytes");
-                await _connection.SendPacketAsync(new ChannelDataPacket()
-                {
-                    RecipientChannel = _confirmationPacket.SenderChannel,
-                    Data = buffer.Slice(0, len).ToArray()
-                }).ConfigureAwait(false);
-
-                Interlocked.Add(ref _sendWindowSize, -len);
-            }
-
-            reader.AdvanceTo(result.Buffer.End);
-
-            if (result.IsCompleted)
-            {
-                break;
-            }
-        }
-
-        await reader.CompleteAsync().ConfigureAwait(false);
     }
 
     public Stream GetOutputStream()
@@ -110,6 +53,95 @@ public class SshChannel
     {
         Log.Info($"Process receivedSignal: {exitSignalData.Signal}, coreDumped: {exitSignalData.CoreDumped}, errorMessage: {exitSignalData.ErrorMessage}, languageTag: {exitSignalData.LanguageTag}");
         return ValueTask.FromResult(true);
+    }
+
+    internal ValueTask<bool> OnRequestStatus(bool success)
+    {
+        if (!_channelRequests.TryDequeue(out var requestType))
+        {
+            Log.Info($"Unexpected channel status: {success}");
+            return ValueTask.FromResult(true);
+        }
+
+        Log.Info($"Channel request status: {requestType} -> {(success ? "success" : "failure")}");
+        if (requestType == "shell")
+        {
+            if (success)
+            {
+                _opened.SetResult();
+            }
+            else
+            {
+                _opened.SetException(new Exception("Failed to open shell channel."));
+            }
+        }
+        return ValueTask.FromResult(true);
+    }
+
+    internal async ValueTask<bool> OnOpened(ChannelOpenConfirmationPacket confirmationPacket)
+    {
+        Log.Info($"Channel opened: {confirmationPacket.RecipientChannel}<->{confirmationPacket.SenderChannel}");
+        Log.Info($"InitialWindowSize: {confirmationPacket.InitialWindowSize}");
+        Log.Info($"MaximumPacketSize: {confirmationPacket.MaximumPacketSize}");
+
+        _confirmationPacket = confirmationPacket;
+
+        _channelRequests.Enqueue("pty-req");
+        await _connection.SendPacketAsync(new ChannelRequestHeader()
+        {
+            RecipientChannel = RemoteChannel,
+            RequestType = "pty-req",
+            WantReply = true,
+        }, new ChannelRequestPseudoTerminalData
+        {
+            TerminalType = "vt100",
+            TerminalHeightRows = Console.BufferHeight,
+            TerminalWidthCharacters = Console.BufferWidth,
+            TerminalModes = new byte[1]
+        });
+
+        _channelRequests.Enqueue("shell");
+        await _connection.SendPacketAsync(new ChannelRequestHeader()
+        {
+            RecipientChannel = RemoteChannel,
+            RequestType = "shell",
+            WantReply = true
+        });
+
+        return true;
+    }
+
+    internal async ValueTask<bool> OnDataReceived(byte[] data, int? extendedDataTypeCode = null)
+    {
+        Log.Debug($"Data received: {data.Length} bytes, extendedDataTypeCode: {extendedDataTypeCode}");
+        await _receivePipe.Writer.WriteAsync(data).ConfigureAwait(false);
+        await _receivePipe.Writer.FlushAsync().ConfigureAwait(false);
+        return true;
+    }
+
+    internal ValueTask<bool> OnWindowAdjust(int bytesToAdd)
+    {
+        var newSize = Interlocked.Add(ref _sendWindowSize, bytesToAdd);
+        Log.Info($"Window received: +{bytesToAdd} = {newSize}");
+        return ValueTask.FromResult(true);
+    }
+
+    internal async ValueTask<bool> OnEof()
+    {
+        Log.Info($"EOF received");
+        await _receivePipe.Writer.CompleteAsync().ConfigureAwait(false);
+        return true;
+    }
+
+    internal ValueTask<bool> OnClose()
+    {
+        Log.Info($"Close received");
+        return ValueTask.FromResult(true);
+    }
+
+    internal Task WaitToOpen()
+    {
+        return _opened.Task;
     }
 
     internal ValueTask<bool> ProcessPacketAsync(in SshPacket packet)
@@ -176,8 +208,8 @@ public class SshChannel
                 break;
 
             case MessageId.SSH_MSG_CHANNEL_SUCCESS:
-                _opened.TrySetResult();
-                return ValueTask.FromResult(true);
+            case MessageId.SSH_MSG_CHANNEL_FAILURE:
+                return OnRequestStatus(packet.MessageId == MessageId.SSH_MSG_CHANNEL_SUCCESS);
 
             case MessageId.SSH_MSG_CHANNEL_EOF:
                 return OnEof();
@@ -194,54 +226,36 @@ public class SshChannel
         return ValueTask.FromResult(false);
     }
 
-    internal async ValueTask<bool> OnOpened(ChannelOpenConfirmationPacket confirmationPacket)
+    private async Task SendTask()
     {
-        Log.Info($"Channel opened: {confirmationPacket.RecipientChannel}<->{confirmationPacket.SenderChannel}");
-        Log.Info($"InitialWindowSize: {confirmationPacket.InitialWindowSize}");
-        Log.Info($"MaximumPacketSize: {confirmationPacket.MaximumPacketSize}");
-
-        _confirmationPacket = confirmationPacket;
-
-        await _connection.SendPacketAsync(new ChannelRequestHeader()
+        var reader = _sendPipe.Reader;
+        while (true)
         {
-            RecipientChannel = confirmationPacket.RecipientChannel,
-            RequestType = "shell",
-            WantReply = true
-        });
+            var result = await reader.ReadAsync().ConfigureAwait(false);
+            var maxSend = Math.Min(_confirmationPacket.MaximumPacketSize, _sendWindowSize);
 
-        return true;
-    }
+            foreach (var buffer in result.Buffer)
+            {
+                var len = Math.Min(buffer.Length, maxSend);
 
-    internal async ValueTask<bool> OnDataReceived(byte[] data, int? extendedDataTypeCode = null)
-    {
-        Log.Debug($"Data received: {data.Length} bytes, extendedDataTypeCode: {extendedDataTypeCode}");
-        await _receivePipe.Writer.WriteAsync(data).ConfigureAwait(false);
-        await _receivePipe.Writer.FlushAsync().ConfigureAwait(false);
-        return true;
-    }
+                Log.Debug($"Sending {len} bytes");
+                await _connection.SendPacketAsync(new ChannelDataPacket()
+                {
+                    RecipientChannel = _confirmationPacket.SenderChannel,
+                    Data = buffer.Slice(0, len).ToArray()
+                }).ConfigureAwait(false);
 
-    internal ValueTask<bool> OnWindowAdjust(int bytesToAdd)
-    {
-        var newSize = Interlocked.Add(ref _sendWindowSize, bytesToAdd);
-        Log.Info($"Window received: +{bytesToAdd} = {newSize}");
-        return ValueTask.FromResult(true);
-    }
+                Interlocked.Add(ref _sendWindowSize, -len);
+            }
 
-    internal async ValueTask<bool> OnEof()
-    {
-        Log.Info($"EOF received");
-        await _receivePipe.Writer.CompleteAsync().ConfigureAwait(false);
-        return true;
-    }
+            reader.AdvanceTo(result.Buffer.End);
 
-    internal ValueTask<bool> OnClose()
-    {
-        Log.Info($"Close received");
-        return ValueTask.FromResult(true);
-    }
+            if (result.IsCompleted)
+            {
+                break;
+            }
+        }
 
-    internal Task WaitToOpen()
-    {
-        return _opened.Task;
+        await reader.CompleteAsync().ConfigureAwait(false);
     }
 }

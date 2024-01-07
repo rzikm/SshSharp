@@ -390,13 +390,13 @@ public class SshConnection : IDisposable
         }
     }
 
-    internal ValueTask SendPacketAsync<TAuth>(in UserAuthRequestHeader header, in TAuth auth) where TAuth : IUserauthMethod<TAuth>
+    internal ValueTask SendPacketAsync<TPacket, TData>(in TPacket header, in TData data) where TPacket : IPacketPayload<TPacket> where TData : IPayload<TData>
     {
         lock (SendLock)
         {
             SpanWriter writer = _readerWriter.InitPayload();
-            UserAuthRequestHeader.Write(ref writer, header);
-            TAuth.Write(ref writer, auth);
+            TPacket.Write(ref writer, header);
+            TData.Write(ref writer, data);
             return _readerWriter.FinalizeAndSendAsync(writer, _clientToServerEncryption, _clientToServerMac);
         }
     }
