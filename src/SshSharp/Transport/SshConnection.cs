@@ -10,38 +10,7 @@ using SshSharp.Utils;
 
 namespace SshSharp.Transport;
 
-internal class SshChannel
-{
-    private readonly SshConnection _connection;
-
-    private readonly TaskCompletionSource _opened = new();
-
-    private ChannelOpenConfirmationPacket _confirmationPacket;
-
-    public SshChannel(SshConnection connection)
-    {
-        _connection = connection;
-    }
-
-    internal void SetOpened(ChannelOpenConfirmationPacket confirmationPacket)
-    {
-        Console.WriteLine($"Confirmation: {confirmationPacket.RecipientChannel}, {confirmationPacket.SenderChannel}, {confirmationPacket.InitialWindowSize}, {confirmationPacket.MaximumPacketSize}");
-        _confirmationPacket = confirmationPacket;
-        _opened.TrySetResult();
-    }
-
-    public Task ExecuteCommandAsync(string command)
-    {
-        return Task.CompletedTask;
-    }
-
-    internal Task WaitToOpen()
-    {
-        return _opened.Task;
-    }
-}
-
-internal class SshConnection : IDisposable
+public class SshConnection : IDisposable
 {
     private bool _disposed;
 
@@ -83,10 +52,11 @@ internal class SshConnection : IDisposable
 
     private KeyExchangeInitPacket _clientKexPacket;
 
-    private readonly TaskCompletionSource _handshakeCompletionSource = new();
-    private TaskCompletionSource<(bool, UserauthPublicKeyOkPacket)> _userAuthPublicKey = new();
-    private readonly TaskCompletionSource _serviceAccept = new();
-    private readonly TaskCompletionSource _userAuthSuccess = new();
+    // TODO: find a better way to wait for replies
+    private readonly TaskCompletionSource _handshakeCompletionSource = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private TaskCompletionSource<(bool, UserauthPublicKeyOkPacket)> _userAuthPublicKey = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _serviceAccept = new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private readonly TaskCompletionSource _userAuthSuccess = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
     public SshConnection(Socket socket)
     {
@@ -109,7 +79,7 @@ internal class SshConnection : IDisposable
     {
         // exchange versions
         ServerVersion = await ReadVersionStringAsync().ConfigureAwait(false);
-        System.Console.WriteLine($"Server version: {ServerVersion}");
+        Log.Info($"Server version: {ServerVersion}");
 
         await _stream.WriteAsync(Constants.VersionBytesCrLf).ConfigureAwait(false);
 
@@ -120,21 +90,25 @@ internal class SshConnection : IDisposable
         await AuthenticateUser().ConfigureAwait(false);
     }
 
-    public async Task ExecuteCommandAsync(string command)
+    public async Task<SshChannel> ExecuteShellAsync()
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+
         var channel = new SshChannel(this);
 
         var packet = new SessionOpenPacket
         {
             InitialWindowSize = 0x100000,
             MaximumPacketSize = 0x4000,
-            SenderChannel = Interlocked.Increment(ref _channelCount),
+            SenderChannel = Interlocked.Increment(ref _channelCount) - 1,
         };
 
         _channels.TryAdd(packet.SenderChannel, channel);
 
         await SendPacketAsync(packet).ConfigureAwait(false);
         await channel.WaitToOpen().ConfigureAwait(false);
+
+        return channel;
     }
 
     private async Task AuthenticateUser()
@@ -160,7 +134,7 @@ internal class SshConnection : IDisposable
 
         foreach (var authAlg in publicKey.GetAlgorithms())
         {
-            System.Console.WriteLine($"Attempting auth via: {authAlg.AlgorithmName}");
+            Log.Info($"Attempting auth via: {authAlg.AlgorithmName}");
 
             var publicKeyData = new UserauthPublicKeyData
             {
@@ -172,7 +146,7 @@ internal class SshConnection : IDisposable
             var (success, packet) = await _userAuthPublicKey.Task.ConfigureAwait(false);
             if (!success)
             {
-                Console.WriteLine($"Rejected: {authAlg.AlgorithmName}");
+                Log.Info($"Rejected: {authAlg.AlgorithmName}");
                 _userAuthPublicKey = new();
                 continue;
             }
@@ -185,7 +159,7 @@ internal class SshConnection : IDisposable
             {
                 throw new Exception($"Server accepted different public key.");
             }
-            Console.WriteLine("Public key accepted, retrying with signature.");
+            Log.Info("Public key accepted, retrying with signature.");
 
             // temporarily put empty array in signature to force TRUE in the "has signature" field for signature computation
             publicKeyData.Signature = Array.Empty<byte>();
@@ -211,7 +185,7 @@ internal class SshConnection : IDisposable
 
         if (authenticated)
         {
-            Console.WriteLine("User auth successful");
+            Log.Info("User auth successful");
         }
     }
 
@@ -242,7 +216,7 @@ internal class SshConnection : IDisposable
         do
         {
             await _readerWriter.WaitForPacketAsync(_serverToClientEncryption, _serverToClientMac).ConfigureAwait(false);
-        } while (await ProcessNextPacket());
+        } while (await ProcessNextPacket().ConfigureAwait(false));
     }
 
     private async ValueTask<bool> OnKeyExchangeInitPacket(KeyExchangeInitPacket serverKexPacket)
@@ -284,6 +258,7 @@ internal class SshConnection : IDisposable
     private ValueTask<bool> ProcessNextPacket()
     {
         var packet = _readerWriter.ReadPacket(_serverToClientEncryption, _serverToClientMac);
+        Log.Debug($"Received packet: {packet.MessageId}");
         switch (packet.MessageId)
         {
             case MessageId.SSH_MSG_KEXINIT:
@@ -323,25 +298,33 @@ internal class SshConnection : IDisposable
 
             case MessageId.SSH_MSG_GLOBAL_REQUEST:
                 if (packet.TryParsePayload(out GlobalRequestPacket globalRequestPacket, out _))
-                    Console.WriteLine($"Global request: {globalRequestPacket.RequestName}, want reply: {globalRequestPacket.WantReply}");
-                return ValueTask.FromResult(true);
-
-            case MessageId.SSH_MSG_CHANNEL_OPEN_CONFIRMATION:
-                if (packet.TryParsePayload(out ChannelOpenConfirmationPacket payload, out _))
                 {
-                    if (_channels.TryGetValue(payload.RecipientChannel, out var channel))
-                    {
-                        channel.SetOpened(payload);
-                    }
+                    Log.Info($"Global request: {globalRequestPacket.RequestName}, want reply: {globalRequestPacket.WantReply}");
+                    return ValueTask.FromResult(true);
                 }
-                return ValueTask.FromResult(true);
+                break;
+
+            case MessageId id when id >= MessageId.SSH_MSG_CHANNEL_OPEN_CONFIRMATION && id <= MessageId.SSH_MSG_CHANNEL_FAILURE:
+                // first byte is messageId, then is uint32 recipientChannel id
+                if (DataHelper.TryReadPrimitive(packet.Payload.Slice(1), out int channelId, out _))
+                {
+                    if (_channels.TryGetValue(channelId, out var channel))
+                    {
+                        return channel.ProcessPacketAsync(packet);
+                    }
+
+                    Log.Info($"Unknown channel: {channelId}");
+                }
+                break;
 
             default:
+                Log.Info($"Unknown Message: {packet.MessageId}");
                 _sentinel = ExceptionDispatchInfo.SetCurrentStackTrace(new Exception($"Unexpected packet: {packet.MessageId}"));
                 break;
         }
 
-        return ValueTask.FromResult(true);
+        Log.Info($"Failed to process message: {packet.MessageId}");
+        return ValueTask.FromResult(false);
     }
 
     //
@@ -364,7 +347,7 @@ internal class SshConnection : IDisposable
 
     private void DeriveClientToServerEncryptionKeys()
     {
-        System.Console.WriteLine("Deriving client to server encryption keys.");
+        Log.Info("Deriving client to server encryption keys.");
 
         byte[] HashHelper(char c, int len) => KeyGenerationHelpers.DeriveSessionKey(_keyExchange.SharedSecret, _exchangeHash, c, _sessionId, _keyExchange, len);
 
@@ -377,7 +360,7 @@ internal class SshConnection : IDisposable
 
     private void DeriveServerToClientEncryptionKeys()
     {
-        System.Console.WriteLine("Deriving server to client encryption keys.");
+        Log.Info("Deriving server to client encryption keys.");
 
         byte[] HashHelper(char c, int len) => KeyGenerationHelpers.DeriveSessionKey(_keyExchange.SharedSecret, _exchangeHash, c, _sessionId, _keyExchange, len);
 
@@ -388,54 +371,6 @@ internal class SshConnection : IDisposable
         _serverToClientMac = MacAlgorithm.Create(_parameters.MacAlgorithmClientToServer, _clientToServerMac.SequenceNumber, l => HashHelper('F', l));
     }
 
-    private async ValueTask<T> ExpectMessageAsync<T>() where T : IPacketPayload<T>
-    {
-        await _readerWriter.WaitForPacketAsync(_serverToClientEncryption, _serverToClientMac).ConfigureAwait(false);
-        return ExpectMessageCore();
-
-        T ExpectMessageCore()
-        {
-            var packet = ReadPacket();
-            if (packet.MessageId != T.MessageId)
-            {
-                if (packet.MessageId == MessageId.SSH_MSG_DISCONNECT)
-                {
-                    if (packet.TryParsePayload(out DisconnectPacket disconnectPacket, out _))
-                    {
-                        throw new Exception($"Disconnected: [{disconnectPacket.ReasonCode}] {disconnectPacket.Description}");
-                    }
-                }
-
-                throw new Exception($"Expected {T.MessageId}, got {packet.MessageId}.");
-            }
-
-            return packet.ParsePayload<T>();
-        }
-    }
-
-    private async ValueTask ExpectMessageAsync(MessageId messageId)
-    {
-        await _readerWriter.WaitForPacketAsync(_serverToClientEncryption, _serverToClientMac).ConfigureAwait(false);
-        ExpectMessageCore();
-
-        void ExpectMessageCore()
-        {
-            var packet = ReadPacket();
-            if (packet.MessageId != messageId)
-            {
-                if (packet.MessageId == MessageId.SSH_MSG_DISCONNECT)
-                {
-                    if (packet.TryParsePayload(out DisconnectPacket disconnectPacket, out _))
-                    {
-                        throw new Exception($"Disconnected: [{disconnectPacket.ReasonCode}] {disconnectPacket.Description}");
-                    }
-                }
-
-                throw new Exception($"Expected {messageId}, got {packet.MessageId}.");
-            }
-        }
-    }
-
     private async Task<string> ReadVersionStringAsync()
     {
         return Encoding.UTF8.GetString((await _readerWriter.ReadVersionStringAsync().ConfigureAwait(false)).Span);
@@ -444,7 +379,7 @@ internal class SshConnection : IDisposable
     //
     // All send operations need to be serialized because of the encryption and MAC algorithms.
     //
-    private ValueTask SendPacketAsync<TPacket>(in TPacket packet) where TPacket : IPacketPayload<TPacket>
+    internal ValueTask SendPacketAsync<TPacket>(in TPacket packet) where TPacket : IPacketPayload<TPacket>
     {
         lock (SendLock)
         {
@@ -452,7 +387,7 @@ internal class SshConnection : IDisposable
         }
     }
 
-    private ValueTask SendPacketAsync<TAuth>(in UserAuthRequestHeader header, in TAuth auth) where TAuth : IUserauthMethod<TAuth>
+    internal ValueTask SendPacketAsync<TAuth>(in UserAuthRequestHeader header, in TAuth auth) where TAuth : IUserauthMethod<TAuth>
     {
         lock (SendLock)
         {
@@ -460,23 +395,13 @@ internal class SshConnection : IDisposable
         }
     }
 
-    private ValueTask SendPacketAsync(MessageId messageId)
+    internal ValueTask SendPacketAsync(MessageId messageId)
     {
         lock (SendLock)
         {
             return _readerWriter.SendPacketAsync(messageId, _clientToServerEncryption, _clientToServerMac);
         }
     }
-
-    private ValueTask SendPacketAsync(MessageId messageId, string param)
-    {
-        lock (SendLock)
-        {
-            return _readerWriter.SendPacketAsync(messageId, param, _clientToServerEncryption, _clientToServerMac);
-        }
-    }
-
-    private SshPacket ReadPacket() => _readerWriter.ReadPacket(_serverToClientEncryption, _serverToClientMac);
 
     public void Dispose()
     {

@@ -8,7 +8,7 @@
             "name": ".NET Core Launch (console)",
             "type": "coreclr",
             "request": "launch",
-            "program": "${workspaceFolder}/examples/Playground/bin/Debug/net8.0/Playground.dll",
+            "program": "${workspaceFolder}/examples/SshClient/bin/Debug/net8.0/SshClient.dll",
             "args": [],
             "cwd": "${workspaceFolder}",
             "stopAtEntry": false,

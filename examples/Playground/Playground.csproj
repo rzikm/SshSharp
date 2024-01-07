@@ -9,7 +9,6 @@
 
   <ItemGroup>
 
-    <Compile Include="..\..\src\SshSharp\**\*.cs" Exclude="..\..\src\SshSharp\obj\**\*.cs" />
   </ItemGroup>
 
   <ItemGroup>

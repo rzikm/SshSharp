@@ -24,4 +24,8 @@
     <Compile Include="..\..\src\SshSharp\**\*.cs" Exclude="..\..\src\SshSharp\obj\**\*.cs"/>
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="System.IO.Pipelines" Version="8.0.0" />
+  </ItemGroup>
+
 </Project>
