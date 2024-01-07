@@ -5,7 +5,7 @@ public static class Log
     [Conditional("DEBUG")]
     public static void Debug(string message)
     {
-        Console.WriteLine($"[DBG] {message}");
+        // Console.WriteLine($"[DBG] {message}");
     }
 
     [Conditional("DEBUG")]

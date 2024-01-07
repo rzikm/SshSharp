@@ -379,11 +379,14 @@ public class SshConnection : IDisposable
     //
     // All send operations need to be serialized because of the encryption and MAC algorithms.
     //
+
     internal ValueTask SendPacketAsync<TPacket>(in TPacket packet) where TPacket : IPacketPayload<TPacket>
     {
         lock (SendLock)
         {
-            return _readerWriter.SendPacketAsync(packet, _clientToServerEncryption, _clientToServerMac);
+            SpanWriter writer = _readerWriter.InitPayload();
+            TPacket.Write(ref writer, packet);
+            return _readerWriter.FinalizeAndSendAsync(writer, _clientToServerEncryption, _clientToServerMac);
         }
     }
 
@@ -391,7 +394,10 @@ public class SshConnection : IDisposable
     {
         lock (SendLock)
         {
-            return _readerWriter.SendPacketAsync(header, auth, _clientToServerEncryption, _clientToServerMac);
+            SpanWriter writer = _readerWriter.InitPayload();
+            UserAuthRequestHeader.Write(ref writer, header);
+            TAuth.Write(ref writer, auth);
+            return _readerWriter.FinalizeAndSendAsync(writer, _clientToServerEncryption, _clientToServerMac);
         }
     }
 
@@ -399,7 +405,9 @@ public class SshConnection : IDisposable
     {
         lock (SendLock)
         {
-            return _readerWriter.SendPacketAsync(messageId, _clientToServerEncryption, _clientToServerMac);
+            SpanWriter writer = _readerWriter.InitPayload();
+            writer.WriteByte((byte)messageId);
+            return _readerWriter.FinalizeAndSendAsync(writer, _clientToServerEncryption, _clientToServerMac);
         }
     }
 

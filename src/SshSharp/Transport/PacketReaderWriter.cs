@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Net.Sockets;
 using SshSharp.Crypto;
@@ -91,38 +92,34 @@ internal class PacketReaderWriter : IDisposable
         return _recvBuffer.AsMemory(0, index);
     }
 
-    public ValueTask SendPacketAsync<TAuth>(in UserAuthRequestHeader header, in TAuth auth, EncryptionAlgorithm encryption, MacAlgorithm mac) where TAuth : IUserauthMethod<TAuth>
+    public SpanWriter InitPayload()
     {
-        int written = PacketHelpers.WritePayload(_sendBuffer, header, auth, encryption, mac);
-        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
+        return new(_sendBuffer.AsSpan(5));
     }
 
-    public ValueTask SendPacketAsync<T>(in T packet, EncryptionAlgorithm encryption, MacAlgorithm mac) where T : IPacketPayload<T>
+    public ValueTask FinalizeAndSendAsync(SpanWriter writer, EncryptionAlgorithm encryption, MacAlgorithm mac)
     {
-        int written = PacketHelpers.WritePayload(_sendBuffer, packet, encryption, mac);
-        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
-    }
+        Span<byte> destination = _sendBuffer;
+        int payloadLen = destination.Length - 5 - writer.RemainingBytes;
 
-    public ValueTask SendPacketAsync(MessageId messageId, string param) => SendPacketAsync(messageId, param, NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
+        // at least 4 bytes of padding, add another 8 to make sure we can subtract up to 8 bytes for alignment
+        int paddingLen = Random.Shared.Next(20, 30);
+        int lenWithoutMac = 5 + payloadLen + paddingLen;
 
-    public ValueTask SendPacketAsync(MessageId messageId, string param, EncryptionAlgorithm encryption, MacAlgorithm mac)
-    {
-        Span<byte> buffer = stackalloc byte[DataHelper.GetStringWireLength(param) + 1];
-        SpanWriter writer = new(buffer);
-        writer.WriteByte((byte)messageId);
-        writer.WriteString(param);
+        // length without mac must be divisible by 8 or block size, whichever is higher
+        int alignment = Math.Max(8, encryption.BlockSize);
+        paddingLen -= lenWithoutMac % alignment;
+        lenWithoutMac -= lenWithoutMac % alignment;
 
-        int written = PacketHelpers.WritePayload(_sendBuffer, buffer, encryption, mac);
-        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
-    }
+        BinaryPrimitives.WriteUInt32BigEndian(destination, (uint)(payloadLen + paddingLen + 1));
+        destination[4] = (byte)paddingLen;
 
-    public ValueTask SendPacketAsync(MessageId messageId) => SendPacketAsync(messageId, NullEncryptionAlgorithm.Instance, NullMacAlgorithm.Instance);
+        // clear padding
+        destination.Slice(5 + payloadLen, paddingLen).Clear();
 
-    public ValueTask SendPacketAsync(MessageId messageId, EncryptionAlgorithm encryption, MacAlgorithm mac)
-    {
-        Span<byte> buffer = [(byte)messageId];
-        int written = PacketHelpers.WritePayload(_sendBuffer, buffer, encryption, mac);
-        return _stream.WriteAsync(_sendBuffer.AsMemory(0, written));
+        mac.Sign(destination.Slice(0, lenWithoutMac), destination.Slice(lenWithoutMac, mac.MacSize));
+        encryption.Encrypt(destination.Slice(0, lenWithoutMac));
+        return _stream.WriteAsync(_sendBuffer.AsMemory(0, lenWithoutMac + mac.MacSize));
     }
 
     protected virtual void Dispose(bool disposing)

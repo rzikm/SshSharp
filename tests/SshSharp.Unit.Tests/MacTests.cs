@@ -18,7 +18,7 @@ public class MacTests
 
         const string expectedMac = "F3-94-C0-EB-83-48-6A-FB-C4-C3-0C-E1-CA-AB-9C-62-F0-50-BA-F7";
 
-        HmacShaMacAlgorithm mac = new HmacShaMacAlgorithm(sequenceNumber, HexToBytes(hashKey));
+        HmacShaAlgorithm<HmacSha1Adatper> mac = new HmacShaAlgorithm<HmacSha1Adatper>(sequenceNumber, _ => HexToBytes(hashKey));
 
         Span<byte> macBytes = stackalloc byte[mac.MacSize];
 
