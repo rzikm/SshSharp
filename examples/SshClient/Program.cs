@@ -21,34 +21,5 @@ using var connection = await SshConnection.ConnectAsync(endpoint);
 
 var channel = await connection.ExecuteShellAsync();
 
-var consoleOut = Console.OpenStandardOutput();
-
-_ = Task.Run(async () =>
-{
-    channel.GetOutputStream();
-    var buffer = new byte[1024];
-    while (true)
-    {
-        var read = await channel.GetOutputStream().ReadAsync(buffer).ConfigureAwait(false);
-        if (read == 0)
-        {
-            break;
-        }
-        await consoleOut.WriteAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
-        await consoleOut.FlushAsync().ConfigureAwait(false);
-    }
-});
-
-var writer = new StreamWriter(channel.GetInputStream());
-writer.AutoFlush = true;
-
-while (true)
-{
-    var line = Console.ReadLine();
-    if (line == "exit")
-    {
-        break;
-    }
-    await writer.WriteLineAsync(line);
-    // await writer.WriteLineAsync("ls");
-}
+_ = Task.Run(() => { Console.OpenStandardInput().CopyTo(channel.GetInputStream()); });
+channel.GetOutputStream().CopyTo(Console.OpenStandardOutput());

@@ -1,15 +1,7 @@
-using System.Buffers;
-using System.Collections.Concurrent;
-using System.Net;
-using System.Net.Sockets;
-using System.Runtime.ExceptionServices;
-using System.Text;
 using System.IO.Pipelines;
-
-using SshSharp.Crypto;
+using System.Threading.Channels;
 using SshSharp.Packets;
 using SshSharp.Utils;
-using System.IO.Pipes;
 
 namespace SshSharp.Transport;
 
@@ -108,6 +100,18 @@ public class SshChannel
         return _sendPipe.Writer.AsStream();
     }
 
+    internal ValueTask<bool> ProcessExitStatus(in ChannelRequestHeader header, int status)
+    {
+        Log.Info($"Process exitted: {status}");
+        return ValueTask.FromResult(true);
+    }
+
+    internal ValueTask<bool> ProcessExitSignal(in ChannelRequestHeader header, ChannelRequestExitSignalData exitSignalData)
+    {
+        Log.Info($"Process receivedSignal: {exitSignalData.Signal}, coreDumped: {exitSignalData.CoreDumped}, errorMessage: {exitSignalData.ErrorMessage}, languageTag: {exitSignalData.LanguageTag}");
+        return ValueTask.FromResult(true);
+    }
+
     internal ValueTask<bool> ProcessPacketAsync(in SshPacket packet)
     {
         switch (packet.MessageId)
@@ -141,10 +145,33 @@ public class SshChannel
                 break;
 
             case MessageId.SSH_MSG_CHANNEL_REQUEST:
-                if (packet.TryParsePayload(out ChannelRequestPacket requestPacket, out _))
                 {
-                    Log.Info($"ChannelRequestPacket: {requestPacket.RequestType}");
-                    return ValueTask.FromResult(true);
+                    SpanReader reader = new(packet.Payload);
+                    if (!ChannelRequestHeader.TryRead(ref reader, out ChannelRequestHeader header))
+                    {
+                        break;
+                    }
+
+                    switch (header.RequestType)
+                    {
+                        case "exit-status":
+                            if (reader.TryReadUInt32(out uint status))
+                            {
+                                return ProcessExitStatus(header, (int)status);
+                            }
+                            break;
+
+                        case "exit-signal":
+                            if (ChannelRequestExitSignalData.TryRead(ref reader, out ChannelRequestExitSignalData exitSignalData))
+                            {
+                                return ProcessExitSignal(header, exitSignalData);
+                            }
+                            break;
+
+                        default:
+                            Log.Info($"Unsupported channel request: {header.RequestType}, want reply: {header.WantReply}");
+                            return ValueTask.FromResult(true);
+                    }
                 }
                 break;
 
@@ -175,7 +202,7 @@ public class SshChannel
 
         _confirmationPacket = confirmationPacket;
 
-        await _connection.SendPacketAsync(new ChannelRequestPacket()
+        await _connection.SendPacketAsync(new ChannelRequestHeader()
         {
             RecipientChannel = confirmationPacket.RecipientChannel,
             RequestType = "shell",
@@ -187,7 +214,7 @@ public class SshChannel
 
     internal async ValueTask<bool> OnDataReceived(byte[] data, int? extendedDataTypeCode = null)
     {
-        // Log.Info($"Data received: {data.Length} bytes, extendedDataTypeCode: {extendedDataTypeCode}");
+        Log.Debug($"Data received: {data.Length} bytes, extendedDataTypeCode: {extendedDataTypeCode}");
         await _receivePipe.Writer.WriteAsync(data).ConfigureAwait(false);
         await _receivePipe.Writer.FlushAsync().ConfigureAwait(false);
         return true;
@@ -200,10 +227,11 @@ public class SshChannel
         return ValueTask.FromResult(true);
     }
 
-    internal ValueTask<bool> OnEof()
+    internal async ValueTask<bool> OnEof()
     {
         Log.Info($"EOF received");
-        return ValueTask.FromResult(true);
+        await _receivePipe.Writer.CompleteAsync().ConfigureAwait(false);
+        return true;
     }
 
     internal ValueTask<bool> OnClose()
